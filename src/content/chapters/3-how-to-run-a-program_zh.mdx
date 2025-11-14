@@ -1,0 +1,291 @@
+---
+chapter: 3
+title: 如何运行程序
+shortname: Exec
+slug: how-to-run-a-program
+updatedAt: 2023-07-24T15:57:08.044Z
+---
+
+import CodeBlock from '../../components/CodeBlock.astro'
+
+到目前为止，我们已经介绍了 CPU 如何执行从可执行文件加载的机器码，什么是基于环的安全性，以及系统调用如何工作。在本节中，我们将深入 Linux 内核，弄清楚程序是如何加载和运行的。
+
+我们将专门研究 x86-64 上的 Linux。为什么？
+
+- Linux 是一个功能齐全的生产操作系统，适用于桌面、移动和服务器使用场景。Linux 是开源的，因此只需阅读其源代码就可以非常容易地进行研究。我将在本文中直接引用一些内核代码！
+- x86-64 是大多数现代台式计算机使用的架构，也是许多代码的目标架构。我提到的特定于 x86-64 的行为子集将很好地泛化。
+
+我们学到的大部分内容将很好地泛化到其他操作系统和架构，即使它们在各种具体方式上有所不同。
+
+## Exec 系统调用的基本行为
+
+<img src='/images/linux-program-execution-process.png' loading='eager' style='max-width: 600px; margin: 0 auto;' alt='一个演示 exec 系统调用的流程图。左侧，一组标记为"用户空间"的流程图项，右侧，一组标记为"内核空间"。从用户空间组开始：用户在其终端中运行 ./file.bin，然后运行系统调用 execve("./file.bin", ...)。这流向执行 SYSCALL 指令，然后指向内核空间组中的第一项："加载并设置二进制文件"，它指向"尝试 binfmt"。如果支持 binfmt，它将启动新进程（替换当前进程）。如果不支持，它会再次尝试 binfmt。' width='917' height='424' />
+
+让我们从一个非常重要的系统调用开始：`execve`。它加载一个程序，如果成功，则用该程序替换当前进程。还存在其他几个系统调用（`execlp`、`execvpe` 等），但它们都以各种方式在 `execve` 之上构建。
+
+> **补充说明：`execveat`**
+>
+> `execve` *实际上*是建立在 `execveat` 之上的，`execveat` 是一个更通用的系统调用，它使用一些配置选项运行程序。为了简单起见，我们主要讨论 `execve`；唯一的区别是它为 `execveat` 提供了一些默认值。
+>
+> 好奇 `ve` 代表什么？`v` 表示一个参数是参数的向量（列表）（`argv`），`e` 表示另一个参数是环境变量的向量（`envp`）。各种其他 exec 系统调用具有不同的后缀来指定不同的调用签名。`execveat` 中的 `at` 只是"at"，因为它指定了在何处运行 `execve` 的位置。
+
+`execve` 的调用签名是：
+
+<CodeBlock>
+```c
+int execve(const char *filename, char *const argv[], char *const envp[]);
+```
+</CodeBlock>
+
+- `filename` 参数指定要运行的程序的路径。
+- `argv` 是一个以 null 结尾的（意味着最后一项是 null 指针）程序参数列表。你通常看到传递给 C main 函数的 `argc` 参数实际上是稍后由系统调用计算的，因此是 null 结尾的。
+- `envp` 参数包含另一个以 null 结尾的环境变量列表，用作应用程序的上下文。它们……按照惯例是 `KEY=VALUE` 对。*按照惯例。*我爱计算机。
+
+有趣的事实！你知道程序的第一个参数是程序名称的惯例吗？这*纯粹是一个惯例*，实际上不是由 `execve` 系统调用本身设置的！第一个参数将是作为 `argv` 参数中的第一项传递给 `execve` 的任何内容，即使它与程序名称无关。
+
+有趣的是，`execve` 确实有一些代码假设 `argv[0]` 是程序名称。稍后我们讨论解释性脚本语言时会详细介绍这一点。
+
+### 步骤 0：定义
+
+我们已经知道系统调用是如何工作的，但我们从未见过真实世界的代码示例！让我们查看 Linux 内核的源代码，看看 `execve` 是如何在幕后定义的：
+
+<CodeBlock name='fs/exec.c' startLine={2105} sourceUrl='https://github.com/torvalds/linux/blob/22b8cc3e78f5448b4c5df00303817a9137cd663f/fs/exec.c#L2105-L2111'>
+```c
+SYSCALL_DEFINE3(execve,
+		const char __user *, filename,
+		const char __user *const __user *, argv,
+		const char __user *const __user *, envp)
+{
+	return do_execve(getname(filename), argv, envp);
+}
+```
+</CodeBlock>
+
+`SYSCALL_DEFINE3` 是一个定义 3 参数系统调用代码的宏。
+
+> 我很好奇为什么[元数](https://en.wikipedia.org/wiki/Arity)被硬编码在宏名称中；我在网上搜索了一下，了解到这是一个解决[某些安全漏洞](https://nvd.nist.gov/vuln/detail/CVE-2009-0029)的变通方法。
+
+filename 参数传递给一个 `getname()` 函数，该函数将字符串从用户空间复制到内核空间并执行一些使用跟踪操作。它返回一个 `filename` 结构，该结构在 `include/linux/fs.h` 中定义。它存储指向用户空间中原始字符串的指针以及指向复制到内核空间的值的新指针：
+
+<CodeBlock name='include/linux/fs.h' startLine={2294} sourceUrl='https://github.com/torvalds/linux/blob/22b8cc3e78f5448b4c5df00303817a9137cd663f/include/linux/fs.h#L2294-L2300'>
+```c
+struct filename {
+	const char		*name;	/* pointer to actual string */
+	const __user char	*uptr;	/* original userland pointer */
+	int			refcnt;
+	struct audit_names	*aname;
+	const char		iname[];
+};
+```
+</CodeBlock>
+
+`execve` 系统调用然后调用 `do_execve()` 函数。这反过来调用带有一些默认值的 `do_execveat_common()`。我之前提到的 `execveat` 系统调用也调用 `do_execveat_common()`，但传递更多用户提供的选项。
+
+在下面的代码片段中，我包含了 `do_execve` 和 `do_execveat` 的定义：
+
+<CodeBlock name='fs/exec.c' startLine={2028} sourceUrl='https://github.com/torvalds/linux/blob/22b8cc3e78f5448b4c5df00303817a9137cd663f/fs/exec.c#L2028-L2046'>
+```c
+static int do_execve(struct filename *filename,
+	const char __user *const __user *__argv,
+	const char __user *const __user *__envp)
+{
+	struct user_arg_ptr argv = { .ptr.native = __argv };
+	struct user_arg_ptr envp = { .ptr.native = __envp };
+	return do_execveat_common(AT_FDCWD, filename, argv, envp, 0);
+}
+
+static int do_execveat(int fd, struct filename *filename,
+		const char __user *const __user *__argv,
+		const char __user *const __user *__envp,
+		int flags)
+{
+	struct user_arg_ptr argv = { .ptr.native = __argv };
+	struct user_arg_ptr envp = { .ptr.native = __envp };
+
+	return do_execveat_common(fd, filename, argv, envp, flags);
+}
+```
+</CodeBlock>
+
+\[原样间距\]
+
+在 `execveat` 中，一个文件描述符（一种指向*某些资源*的 id 类型）被传递给系统调用，然后传递给 `do_execveat_common`。这指定了相对于哪个目录执行程序。
+
+在 `execve` 中，文件描述符参数使用了一个特殊值 `AT_FDCWD`。这是 Linux 内核中的一个共享常量，告诉函数将路径名解释为相对于当前工作目录。接受文件描述符的函数通常包括手动检查，如 <code>if&nbsp;(fd&nbsp;==&nbsp;AT_FDCWD) \{&nbsp;/\*&nbsp;special codepath&nbsp;\*/&nbsp;\}</code>。
+
+### 步骤 1：设置
+
+我们现在已经到达了 `do_execveat_common`，这是处理程序执行的核心函数。我们将暂时从盯着代码中退一步，以获得此函数执行操作的更大视角。
+
+`do_execveat_common` 的第一个主要工作是设置一个名为 `linux_binprm` 的结构。我不会包含[整个结构定义](https://github.com/torvalds/linux/blob/22b8cc3e78f5448b4c5df00303817a9137cd663f/include/linux/binfmts.h#L15-L65)的副本，但有几个重要字段需要介绍：
+
+- 定义了 `mm_struct` 和 `vm_area_struct` 等数据结构，以便为新程序准备虚拟内存管理。
+- 计算并存储 `argc` 和 `envc` 以传递给程序。
+- `filename` 和 `interp` 分别存储程序及其解释器的文件名。它们开始时彼此相等，但在某些情况下可以更改：一个这样的情况是在运行带有 [shebang](https://en.wikipedia.org/wiki/Shebang_(Unix)) 的解释性脚本时。例如，在执行 Python 程序时，`filename` 指向源文件，但 `interp` 是 Python 解释器的路径。
+- `buf` 是一个用要执行的文件的前 256 个字节填充的数组。它用于检测文件的格式并加载脚本 shebang。
+
+（今天学到的：binprm 代表 **bin**ary **pr**og**r**a**m**。）
+
+让我们仔细看看这个缓冲区 `buf`：
+
+<CodeBlock name='linux_binprm @ include/linux/binfmts.h' startLine={64} sourceUrl='https://github.com/torvalds/linux/blob/22b8cc3e78f5448b4c5df00303817a9137cd663f/include/linux/binfmts.h#L64'>
+```c
+	char buf[BINPRM_BUF_SIZE];
+```
+</CodeBlock>
+
+正如我们所看到的，其长度定义为常量 `BINPRM_BUF_SIZE`。通过在代码库中搜索此字符串，我们可以在 `include/uapi/linux/binfmts.h` 中找到此定义：
+
+<CodeBlock name='include/uapi/linux/binfmts.h' startLine={18} sourceUrl='https://github.com/torvalds/linux/blob/22b8cc3e78f5448b4c5df00303817a9137cd663f/include/uapi/linux/binfmts.h#L18-L19'>
+```c
+/* sizeof(linux_binprm->buf) */
+#define BINPRM_BUF_SIZE 256
+```
+</CodeBlock>
+
+因此，内核将执行文件的开头 256 个字节加载到此内存缓冲区中。
+
+> **补充说明：什么是 UAPI？**
+>
+> 你可能会注意到上面代码的路径包含 `/uapi/`。为什么长度没有在 `linux_binprm` 结构的同一文件 `include/linux/binfmts.h` 中定义？
+>
+> UAPI 代表"用户空间 API"。在这种情况下，这意味着有人决定缓冲区的长度应该是内核公共 API 的一部分。理论上，所有 UAPI 都暴露给用户空间，所有非 UAPI 都是内核代码私有的。
+>
+> 内核和用户空间代码最初共存于一个混乱的整体中。2012 年，UAPI 代码被[重构到一个单独的目录](https://lwn.net/Articles/507794/)，作为改善可维护性的尝试。
+
+### 步骤 2：Binfmts
+
+内核的下一个主要工作是遍历一堆"binfmt"（二进制格式）处理程序。这些处理程序在诸如 `fs/binfmt_elf.c` 和 `fs/binfmt_flat.c` 之类的文件中定义。[内核模块](https://wiki.archlinux.org/title/Kernel_module)还可以将自己的 binfmt 处理程序添加到池中。
+
+每个处理程序都公开一个 `load_binary()` 函数，该函数接受一个 `linux_binprm` 结构并检查处理程序是否理解程序的格式。
+
+这通常涉及在缓冲区中查找[幻数](https://en.wikipedia.org/wiki/Magic_number_(programming))，尝试解码程序的开头（也来自缓冲区），和/或检查文件扩展名。如果处理程序确实支持该格式，它将准备程序执行并返回成功代码。否则，它会提前退出并返回错误代码。
+
+内核尝试每个 binfmt 的 `load_binary()` 函数，直到它到达一个成功的函数。有时这些会递归运行；例如，如果一个脚本指定了一个解释器，而该解释器本身是一个脚本，层次结构可能是 `binfmt_script` > `binfmt_script` > `binfmt_elf`（其中 ELF 是链末端的可执行格式）。
+
+### 格式重点：脚本
+
+在 Linux 支持的许多格式中，`binfmt_script` 是我想特别讨论的第一个。
+
+你有没有读过或写过 [shebang](https://en.wikipedia.org/wiki/Shebang_(Unix))？某些脚本开头的那一行指定解释器的路径？
+
+<CodeBlock startLine={1}>
+```bash
+#!/bin/bash
+```
+</CodeBlock>
+
+我一直假设这些是由 shell 处理的，但不是！Shebang 实际上是内核的一个功能，脚本使用与其他程序相同的系统调用执行。计算机*太酷了*。
+
+看看 `fs/binfmt_script.c` 如何检查文件是否以 shebang 开头：
+
+<CodeBlock name='load_script @ fs/binfmt_script.c' startLine={40} sourceUrl='https://github.com/torvalds/linux/blob/22b8cc3e78f5448b4c5df00303817a9137cd663f/fs/binfmt_script.c#L40-L42'>
+```c
+	/* Not ours to exec if we don't start with "#!". */
+	if ((bprm->buf[0] != '#') || (bprm->buf[1] != '!'))
+		return -ENOEXEC;
+```
+</CodeBlock>
+
+如果文件确实以 shebang 开头，binfmt 处理程序然后读取解释器路径和路径后的任何空格分隔的参数。它在遇到换行符或缓冲区结尾时停止。
+
+这里有两件有趣的、古怪的事情正在发生。
+
+**首先**，还记得 `linux_binprm` 中的那个缓冲区，它用文件的前 256 个字节填充吗？它用于可执行格式检测，但同一个缓冲区也是 `binfmt_script` 中读取 shebang 的位置。
+
+在我的研究中，我读到一篇文章，将缓冲区描述为 128 字节长。在该文章发布后的某个时候，长度翻倍到 256 字节！好奇为什么，我检查了 Git blame——记录编辑某行代码的每个人的日志——对于 Linux 源代码中定义 `BINPRM_BUF_SIZE` 的行。看哪……
+
+<img src='/images/binprm-buf-changelog.png' loading='lazy' style='max-width: 550px;' alt='来自 Visual Studio Code 编辑器的 Git blame 窗口的屏幕截图。git blame 显示行"#define BINPRM_BUF_SIZE 128"被更改为 256。提交者是 Oleg Nesterov，主要文本是"exec: 将 BINPRM_BUF_SIZE 增加到 256。大型企业客户经常从网络文件系统运行应用程序，其中 IT 强制的项目卷布局最终可能导致路径长度超过 128 个字符。将此提高到下一个 2 的幂可以解决除最严重情况之外的所有问题，同时仍然适合 512b slab。"提交由 Linus Torvalds 等人签署。' width='942' height='968' />
+
+计算机太酷了！
+
+由于 shebang 由内核处理，并从 `buf` 中提取而不是加载整个文件，因此它们*始终*被截断到 `buf` 的长度。显然，4 年前，有人因内核截断他们的 >128 字符路径而恼火，他们的解决方案是通过将缓冲区大小加倍来将截断点加倍！今天，在你自己的 Linux 机器上，如果你有一个超过 256 个字符的 shebang 行，超过 256 个字符的所有内容都将*完全丢失*。
+
+<img src='/images/linux-shebang-truncation.png' loading='lazy' style='max-width: 500px;' alt='一个描绘 shebang 截断的图表。来自名为 file.bin 的文件的大量字节数组。前 256 个字节被突出显示并标记为"加载到 buf 中"，而剩余字节是半透明的并标记为"被忽略，超过 256 字节"。' width='730' height='548' />
+
+想象一下因为这个而出现错误。想象一下试图找出破坏代码的根本原因。想象一下当你发现问题深藏在 Linux 内核中时会是什么感觉。下一个在大型企业发现部分路径神秘消失的 IT 人员要遭殃了。
+
+**第二件古怪的事情：**还记得 `argv[0]` 是程序名称只是*惯例*吗，调用者如何可以将任何 `argv` 传递给 exec 系统调用，它将未经审核地传递？
+
+碰巧 `binfmt_script` 是那些*假设* `argv[0]` 是程序名称的地方之一。它总是删除 `argv[0]`，然后将以下内容添加到 `argv` 的开头：
+
+- 解释器的路径
+- 解释器的参数
+- 脚本的文件名
+
+<blockquote>
+**示例：参数修改**
+
+让我们看一个示例 `execve` 调用：
+
+<CodeBlock>
+```c
+// 参数：filename, argv, envp
+execve("./script", [ "A", "B", "C" ], []);
+```
+</CodeBlock>
+
+这个假设的 `script` 文件的第一行有以下 shebang：
+
+<CodeBlock name='script' startLine={1}>
+```js
+#!/usr/bin/node --experimental-module
+```
+</CodeBlock>
+
+最终传递给 Node 解释器的修改后的 `argv` 将是：
+
+<CodeBlock>
+```c
+[ "/usr/bin/node", "--experimental-module", "./script", "B", "C" ]
+```
+</CodeBlock>
+</blockquote>
+
+更新 `argv` 后，处理程序通过将 `linux_binprm.interp` 设置为解释器路径（在本例中为 Node 二进制文件）来完成准备执行文件。最后，它返回 0 表示成功准备程序执行。
+
+### 格式重点：其他解释器
+
+另一个有趣的处理程序是 `binfmt_misc`。它通过在 `/proc/sys/fs/binfmt_misc/` 挂载一个特殊的文件系统，打开通过用户空间配置添加一些有限格式的能力。程序可以对此目录中的文件执行[特殊格式化](https://docs.kernel.org/admin-guide/binfmt-misc.html)写入以添加自己的处理程序。每个配置条目指定：
+
+- 如何检测其文件格式。这可以指定某个偏移处的幻数或要查找的文件扩展名。
+- 解释器可执行文件的路径。没有办法指定解释器参数，因此如果需要这些参数，则需要包装脚本。
+- 一些配置标志，包括一个指定 `binfmt_misc` 如何更新 `argv` 的标志。
+
+这个 `binfmt_misc` 系统通常由 Java 安装使用，配置为通过其 `0xCAFEBABE` 幻字节检测类文件，并通过其扩展名检测 JAR 文件。在我的特定系统上，配置了一个处理程序，它通过其 .pyc 扩展名检测 Python 字节码并将其传递给适当的处理程序。
+
+这是一种非常酷的方式，可以让程序安装程序为自己的格式添加支持，而无需编写高度特权的内核代码。
+
+## 最终（不是 Linkin Park 歌曲）
+
+exec 系统调用最终将以两种路径之一结束：
+
+- 它最终将到达它理解的可执行二进制格式，可能在几层脚本解释器之后，并运行该代码。在这一点上，旧代码已被替换。
+- ……或者它将耗尽所有选项并向调用程序返回错误代码，夹着尾巴逃跑。
+
+如果你使用过类 Unix 系统，你可能已经注意到从终端运行的 shell 脚本即使没有 shebang 行或 `.sh` 扩展名仍然可以执行。如果你手头有一个非 Windows 终端，你现在就可以测试一下：
+
+<CodeBlock name='Shell session'>
+```
+$ echo "echo hello" > ./file
+$ chmod +x ./file
+$ ./file
+hello
+```
+</CodeBlock>
+
+（`chmod +x` 告诉操作系统文件是可执行的。否则你将无法运行它。）
+
+那么，为什么 shell 脚本作为 shell 脚本运行？内核的格式处理程序应该没有明确的方法在没有任何明显标签的情况下检测 shell 脚本！
+
+好吧，事实证明这种行为不是内核的一部分。它实际上是你的 *shell* 处理失败情况的常见方式。
+
+当你使用 shell 执行文件并且 exec 系统调用失败时，大多数 shell 会*重试将文件作为 shell 脚本执行*，方法是执行一个 shell，将文件名作为第一个参数。Bash 通常会使用自己作为此解释器，而 ZSH 使用 `sh` 是什么，通常是 [Bourne shell](https://en.wikipedia.org/wiki/Bourne_shell)。
+
+这种行为如此普遍，因为它在 [*POSIX*](https://en.wikipedia.org/wiki/POSIX) 中指定，POSIX 是一个旧标准，旨在使代码在 Unix 系统之间可移植。虽然 POSIX 没有被大多数工具或操作系统严格遵循，但它的许多约定仍然是共享的。
+
+> 如果\[exec 系统调用\]由于等效于 `[ENOEXEC]` 错误的错误而失败，**shell 应执行等效于调用 shell 的命令，命令名称作为其第一个操作数**，任何剩余的参数传递给新 shell。如果可执行文件不是文本文件，shell 可能会绕过此命令执行。在这种情况下，它应写入错误消息，并应返回退出状态 126。
+>
+> *来源：<cite>[Shell 命令语言，POSIX.1-2017](https://pubs.opengroup.org/onlinepubs/9699919799.2018edition/utilities/V3_chap02.html#tag_18_09_01_01)</cite>*
+
+计算机太酷了！

@@ -1,0 +1,273 @@
+---
+chapter: 6
+title: 让我们谈谈 Fork 和 COW
+shortname: Fork-Exec
+slug: lets-talk-about-forks-and-cows
+updatedAt: 2023-07-17T17:16:18.079Z
+---
+
+import CodeBlock from '../../components/CodeBlock.astro'
+
+最后一个问题：我们是如何到达这里的？第一个进程从哪里来？
+
+这篇文章快要完成了。我们正处于最后冲刺阶段。即将打出本垒打。走向更绿的牧场。以及其他各种可怕的成语，意思是你距离触摸草地或你在不阅读 15,000 字关于 CPU 架构的文章时做的任何事情只有一个*第 6 章的长度*。
+
+如果 `execve` 通过替换当前进程来启动新程序，你如何在新进程中单独启动新程序？如果你想在计算机上做多件事，这是一个非常重要的能力；当你双击一个应用程序启动它时，应用程序会单独打开，而你之前使用的程序继续运行。
+
+答案是另一个系统调用：`fork`，这是所有多进程处理的基础系统调用。`fork` 实际上非常简单——它克隆当前进程及其内存，将保存的指令指针保持在原位，然后允许两个进程像往常一样继续。如果不干预，程序将继续独立运行，所有计算都会加倍。
+
+新运行的进程被称为"子进程"，最初调用 `fork` 的进程是"父进程"。进程可以多次调用 `fork`，因此有多个子进程。每个子进程都用*进程 ID*（PID）编号，从 1 开始。
+
+盲目地加倍相同的代码是非常无用的，所以 `fork` 在父进程和子进程上返回不同的值。在父进程上，它返回新子进程的 PID，而在子进程上它返回 0。这使得可以在新进程上执行不同的工作，以便 fork 实际上有用。
+
+<CodeBlock name='main.c'>
+```c
+pid_t pid = fork();
+
+// 代码像往常一样从这一点继续，但现在跨越
+// 两个"相同"的进程。
+//
+// 相同……除了从 fork 返回的 PID！
+//
+// 这是任何一个程序的唯一指标，它们
+// 不是独一无二的。
+
+if (pid == 0) {
+	// 我们在子进程中。
+	// 做一些计算并将结果提供给父进程！
+} else {
+	// 我们在父进程中。
+	// 可能继续我们之前做的任何事情。
+}
+```
+</CodeBlock>
+
+进程 fork 可能有点难以理解。从这一点开始，我假设你已经弄明白了；如果你还没有，查看[这个看起来很丑的网站](https://www.csl.mtu.edu/cs4411.ck/www/NOTES/process/fork/create.html)以获得相当好的解释。
+
+无论如何，Unix 程序通过调用 `fork` 然后立即在子进程中运行 `execve` 来启动新程序。这称为 *fork-exec 模式*。当你运行一个程序时，你的计算机执行类似以下的代码：
+
+<CodeBlock name='launcher.c'>
+```c
+pid_t pid = fork();
+
+if (pid == 0) {
+	// 立即用新程序替换子进程。
+	execve(...);
+}
+
+// 由于我们到了这里，进程没有被替换。我们在父进程中！
+// 有用的是，如果我们需要杀死它，我们现在在 PID
+// 变量中也有新子进程的 PID。
+
+// 父程序在这里继续...
+```
+</CodeBlock>
+
+## 哞哞！
+
+你可能已经注意到，复制进程的内存只是为了在加载不同程序时立即丢弃所有内存听起来有点低效。幸运的是，我们有一个 MMU。在物理内存中复制数据是缓慢的部分，而不是复制页表，所以我们简单地*不*复制任何 RAM：我们为新进程创建旧进程的页表的副本，并保持映射指向相同的底层物理内存。
+
+但是子进程应该独立于父进程并与之隔离！子进程写入父进程的内存是不行的，反之亦然！
+
+介绍 *COW*（写时复制）页。使用 COW 页，只要两个进程不尝试写入内存，它们就从相同的物理地址读取。一旦其中一个尝试写入内存，该页就在 RAM 中被复制。COW 页允许两个进程拥有内存隔离，而无需预先克隆整个内存空间的成本。这就是为什么 fork-exec 模式是高效的；由于在加载新二进制文件之前没有写入旧进程的任何内存，因此不需要内存复制。
+
+COW 像许多有趣的事情一样，是通过分页技巧和硬件中断处理实现的。在 `fork` 克隆父进程后，它将两个进程的所有页标记为只读。当程序写入内存时，写入失败，因为内存是只读的。这触发了段错误（硬件中断类型），由内核处理。内核复制内存，更新页以允许写入，并从中断返回以重新尝试写入。
+
+> *A：敲门，敲门！
+> B：谁在那里？
+> A：打断的牛。
+> B：打断的牛什——
+> A：**哞哞哞！***
+
+## 太初（不是创世纪 1:1）
+
+你的计算机上的每个进程都由父程序 fork-exec 而来，除了一个：*init 进程*。init 进程是手动设置的，直接由内核设置。它是第一个运行的用户空间程序，也是关机时最后一个被杀死的程序。
+
+想看一个酷的即时黑屏吗？如果你在 macOS 或 Linux 上，保存你的工作，打开终端，并杀死 init 进程（PID 1）：
+
+<CodeBlock name='Shell session'>
+```
+$ sudo kill 1
+```
+</CodeBlock>
+
+> *作者注：关于 init 进程的知识，不幸的是，只适用于类 Unix 系统，如 macOS 和 Linux。从现在开始你学到的大部分内容不适用于理解 Windows，它有一个非常不同的内核架构。*
+>
+> *就像关于 `execve` 的部分一样，我明确地解决了这个问题——我可以写另一篇关于 NT 内核的完整文章，但我正在阻止自己这样做。（现在。）*
+
+init 进程负责生成构成你的操作系统的所有程序和服务。其中许多反过来生成它们自己的服务和程序。
+
+<img src='/images/init-process-tree.png' loading='eager' style='max-width: 580px; margin: 0 auto;' alt='进程树。根节点标记为"init"。所有子节点都未标记，但暗示由 init 进程生成。' width='1400' height='752' />
+
+杀死 init 进程会杀死它的所有子进程和它们的所有子进程，关闭你的操作系统环境。
+
+## 回到内核
+
+我们在[第 3 章](/how-to-run-a-program)中查看 Linux 内核代码时玩得很开心，所以我们要再做一些！这次我们将从查看内核如何启动 init 进程开始。
+
+你的计算机按照以下顺序启动：
+
+1. 主板捆绑了一小段软件，它在你连接的磁盘上搜索一个名为*引导加载程序*的程序。它选择一个引导加载程序，将其机器码加载到 RAM 中，并执行它。
+
+	请记住，我们还没有进入正在运行的操作系统的世界。在操作系统内核启动 init 进程之前，多进程处理和系统调用实际上并不存在。在 pre-init 上下文中，"执行"一个程序意味着直接跳转到 RAM 中的机器码，而不期望返回。
+2. 引导加载程序负责查找内核，将其加载到 RAM 中，并执行它。一些引导加载程序，如 [GRUB](https://www.gnu.org/software/grub/)，是可配置的和/或让你在多个操作系统之间进行选择。BootX 和 Windows Boot Manager 分别是 macOS 和 Windows 的内置引导加载程序。
+3. 内核现在正在运行，并开始大量的初始化任务例程，包括设置中断处理程序、加载驱动程序和创建初始内存映射。最后，内核将特权级别切换到用户模式并启动 init 程序。
+4. 我们终于在操作系统的用户空间中！init 程序开始运行 init 脚本，启动服务，并执行像 shell/UI 这样的程序。
+
+### 初始化 Linux
+
+在 Linux 上，步骤 3（内核初始化）的大部分发生在 [init/main.c](https://github.com/torvalds/linux/blob/22b8cc3e78f5448b4c5df00303817a9137cd663f/init/main.c) 中的 `start_kernel` 函数中。这个函数有超过 200 行对各种其他 init 函数的调用，所以我不会在本文中包含[整个内容](https://github.com/torvalds/linux/blob/22b8cc3e78f5448b4c5df00303817a9137cd663f/init/main.c#L880-L1091)，但我确实建议浏览一遍！在 `start_kernel` 的末尾，调用了一个名为 `arch_call_rest_init` 的函数：
+
+<CodeBlock name='start_kernel @ init/main.c' startLine={1087} sourceUrl='https://github.com/torvalds/linux/blob/22b8cc3e78f5448b4c5df00303817a9137cd663f/init/main.c#L1087-L1088'>
+```c
+	/* Do the rest non-__init'ed, we're now alive */
+	arch_call_rest_init();
+```
+</CodeBlock>
+
+> **非 \_\_init'ed 是什么意思？**
+>
+> `start_kernel` 函数定义为 `asmlinkage __visible void __init __no_sanitize_address start_kernel(void)`。像 `__visible`、`__init` 和 `__no_sanitize_address` 这样的奇怪关键字都是 Linux 内核中使用的 C 预处理器宏，用于向函数添加各种代码或行为。
+>
+> 在这种情况下，`__init` 是一个宏，指示内核在引导过程完成后立即从内存中释放函数及其数据，只是为了节省空间。
+>
+> 它是如何工作的？不深入杂草，Linux 内核本身被打包为 ELF 文件。`__init` 宏扩展为 `__section(".init.text")`，这是一个编译器指令，将代码放在称为 `.init.text` 的节中，而不是通常的 `.text` 节。其他宏允许数据和常量也放在特殊的 init 节中，例如扩展为 `__section(".init.data")` 的 `__initdata`。
+
+`arch_call_rest_init` 只不过是一个包装函数：
+
+<CodeBlock name='init/main.c' startLine={832} sourceUrl='https://github.com/torvalds/linux/blob/22b8cc3e78f5448b4c5df00303817a9137cd663f/init/main.c#L832-L835'>
+```c
+void __init __weak arch_call_rest_init(void)
+{
+	rest_init();
+}
+```
+</CodeBlock>
+
+注释说"做其余的非 \_\_init'ed"，因为 `rest_init` 没有使用 `__init` 宏定义。这意味着它在清理 init 内存时不会被释放：
+
+<CodeBlock name='init/main.c' startLine={689} sourceUrl='https://github.com/torvalds/linux/blob/22b8cc3e78f5448b4c5df00303817a9137cd663f/init/main.c#L689-L690'>
+```c
+noinline void __ref rest_init(void)
+{
+```
+</CodeBlock>
+
+`rest_init` 现在为 init 进程创建一个线程：
+
+<CodeBlock name='rest_init @ init/main.c' startLine={695} sourceUrl='https://github.com/torvalds/linux/blob/22b8cc3e78f5448b4c5df00303817a9137cd663f/init/main.c#L695-L700'>
+```c
+	/*
+	 * We need to spawn init first so that it obtains pid 1, however
+	 * the init task will end up wanting to create kthreads, which, if
+	 * we schedule it before we create kthreadd, will OOPS.
+	 */
+	pid = user_mode_thread(kernel_init, NULL, CLONE_FS);
+```
+</CodeBlock>
+
+传递给 `user_mode_thread` 的 `kernel_init` 参数是一个函数，它完成一些初始化任务，然后搜索有效的 init 程序以执行它。此过程从一些基本设置任务开始；我将在大部分情况下跳过这些，除了调用 `free_initmem` 的地方。这是内核释放我们的 `.init` 节的地方！
+
+<CodeBlock name='kernel_init @ init/main.c' startLine={1471} sourceUrl='https://github.com/torvalds/linux/blob/22b8cc3e78f5448b4c5df00303817a9137cd663f/init/main.c#L1471'>
+```c
+	free_initmem();
+```
+</CodeBlock>
+
+现在内核可以找到合适的 init 程序来运行：
+
+<CodeBlock name='kernel_init @ init/main.c' startLine={1495} sourceUrl='https://github.com/torvalds/linux/blob/22b8cc3e78f5448b4c5df00303817a9137cd663f/init/main.c#L1495-L1525'>
+```c
+	/*
+	 * We try each of these until one succeeds.
+	 *
+	 * The Bourne shell can be used instead of init if we are
+	 * trying to recover a really broken machine.
+	 */
+	if (execute_command) {
+		ret = run_init_process(execute_command);
+		if (!ret)
+			return 0;
+		panic("Requested init %s failed (error %d).",
+		      execute_command, ret);
+	}
+
+	if (CONFIG_DEFAULT_INIT[0] != '\0') {
+		ret = run_init_process(CONFIG_DEFAULT_INIT);
+		if (ret)
+			pr_err("Default init %s failed (error %d)\n",
+			       CONFIG_DEFAULT_INIT, ret);
+		else
+			return 0;
+	}
+
+	if (!try_to_run_init_process("/sbin/init") ||
+	    !try_to_run_init_process("/etc/init") ||
+	    !try_to_run_init_process("/bin/init") ||
+	    !try_to_run_init_process("/bin/sh"))
+		return 0;
+
+	panic("No working init found.  Try passing init= option to kernel. "
+	      "See Linux Documentation/admin-guide/init.rst for guidance.");
+```
+</CodeBlock>
+
+在 Linux 上，init 程序几乎总是位于或符号链接到 `/sbin/init`。常见的 init 包括 [systemd](https://systemd.io/)（它有一个异常好的网站）、[OpenRC](https://wiki.gentoo.org/wiki/OpenRC/openrc-init) 和 [runit](http://smarden.org/runit/)。如果找不到其他任何东西，`kernel_init` 将默认为 `/bin/sh`——如果它找不到 `/bin/sh`，那就是非常糟糕的事情。
+
+*MacOS 也有一个 init 程序！它叫做 launchd，位于 `/sbin/launchd`。尝试在终端中运行它，因为不是内核而被骂。*
+
+从这一点开始，我们处于启动过程的第 4 步：init 进程在用户空间中运行，并开始使用 fork-exec 模式启动各种程序。
+
+### Fork 内存映射
+
+我很好奇 Linux 内核在 fork 进程时如何重新映射内存的下半部分，所以我到处看了一下。[kernel/fork.c](https://github.com/torvalds/linux/blob/22b8cc3e78f5448b4c5df00303817a9137cd663f/kernel/fork.c) 似乎包含了 fork 进程的大部分代码。该文件的开头有用地指向我查看的正确位置：
+
+<CodeBlock name='kernel/fork.c' startLine={8} sourceUrl='https://github.com/torvalds/linux/blob/22b8cc3e78f5448b4c5df00303817a9137cd663f/kernel/fork.c#L8-L13'>
+```c
+/*
+ *  'fork.c' contains the help-routines for the 'fork' system call
+ * (see also entry.S and others).
+ * Fork is rather simple, once you get the hang of it, but the memory
+ * management can be a bitch. See 'mm/memory.c': 'copy_page_range()'
+ */
+```
+</CodeBlock>
+
+看起来这个 `copy_page_range` 函数获取一些关于内存映射的信息并复制页表。快速浏览它调用的函数，这也是页被设置为只读以使它们成为 COW 页的地方。它通过调用一个名为 `is_cow_mapping` 的函数来检查是否应该这样做。
+
+`is_cow_mapping` 在 [include/linux/mm.h](https://github.com/torvalds/linux/blob/22b8cc3e78f5448b4c5df00303817a9137cd663f/include/linux/mm.h) 中定义，如果内存映射具有[标志](http://books.gigatux.nl/mirror/kerneldevelopment/0672327201/ch14lev1sec2.html)指示内存是可写的并且不在进程之间共享，则返回 true。共享内存不需要 COW，因为它被设计为共享。欣赏略微难以理解的位掩码：
+
+<CodeBlock name='include/linux/mm.h' startLine={1541} sourceUrl='https://github.com/torvalds/linux/blob/22b8cc3e78f5448b4c5df00303817a9137cd663f/include/linux/mm.h#L1541-L1544'>
+```c
+static inline bool is_cow_mapping(vm_flags_t flags)
+{
+	return (flags & (VM_SHARED | VM_MAYWRITE)) == VM_MAYWRITE;
+}
+```
+</CodeBlock>
+
+回到 [kernel/fork.c](https://github.com/torvalds/linux/blob/22b8cc3e78f5448b4c5df00303817a9137cd663f/kernel/fork.c)，对 `copy_page_range` 进行简单的 Command-F 会从 `dup_mmap` 函数中产生一个调用……它反过来由 `dup_mm` 调用……它由 `copy_mm` 调用……它最终由大型 `copy_process` 函数调用！`copy_process` 是 fork 函数的核心，在某种程度上，是 Unix 系统如何执行程序的中心点——始终复制和编辑在启动时为第一个进程创建的模板。
+
+<iframe width="560" height="315" src="https://www.youtube.com/embed/FavUpD_IjVY" title="YouTube video player" frameborder="0" style="aspect-ratio: 16 / 9;" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowfullscreen />
+
+## 总结……
+
+***那么……程序是如何运行的？***
+
+在最低级别：处理器是愚蠢的。它们有一个指向内存的指针，并按行执行指令，除非它们到达一个告诉它们跳转到其他地方的指令。
+
+除了跳转指令，硬件和软件中断也可以通过跳转到可以选择跳转到哪里的预设位置来打破执行序列。处理器核心不能一次运行多个程序，但这可以通过使用计时器重复触发中断并允许内核代码在不同的代码指针之间切换来模拟。
+
+程序被*欺骗*相信它们作为一个连贯的、隔离的单元运行。在用户模式下阻止直接访问系统资源，使用分页隔离内存空间，系统调用被设计为允许通用 I/O 访问，而不需要太多关于真正执行上下文的知识。系统调用是要求 CPU 运行一些内核代码的指令，其位置由内核在启动时配置。
+
+***但是……程序是如何运行的？***
+
+计算机启动后，内核启动 init 进程。这是在更高抽象级别运行的第一个程序，其机器码不必担心许多特定的系统细节。init 程序启动渲染计算机图形环境并负责启动其他软件的程序。
+
+要启动程序，它使用 fork 系统调用克隆自己。这种克隆是高效的，因为所有内存页都是 COW，并且内存不需要在物理 RAM 中复制。在 Linux 上，这是 `copy_process` 函数在起作用。
+
+两个进程检查它们是否是 fork 的进程。如果它们是，它们使用 exec 系统调用要求内核用新程序替换当前进程。
+
+新程序可能是一个 ELF 文件，内核解析它以找到关于如何加载程序以及在新虚拟内存映射中放置其代码和数据的位置的信息。如果程序是动态链接的，内核可能还会准备一个 ELF 解释器。
+
+然后，内核可以加载程序的虚拟内存映射并返回用户空间，程序正在运行，这实际上意味着将 CPU 的指令指针设置为虚拟内存中新程序代码的开始。
