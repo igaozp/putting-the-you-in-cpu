@@ -1,0 +1,53 @@
+---
+chapter: 7
+title: 尾声
+shortname: 尾声
+slug: epilogue
+updatedAt: 2023-07-18T18:59:25.355Z
+---
+
+恭喜！我们现在已经牢牢地将"你"放入 CPU 中。我希望你玩得开心。
+
+我将再次强调你刚刚获得的所有知识都是真实和活跃的，以此送你离开。下次你想到你的计算机如何运行多个应用程序时，我希望你能想象计时器芯片和硬件中断。当你用某种花哨的编程语言编写程序并得到链接器错误时，我希望你想想那个链接器试图做什么。
+
+如果你对本文中包含的任何内容有任何问题（或更正），你应该给我发电子邮件至 [lexi@hackclub.com](mailto:lexi@hackclub.com) 或在 [GitHub](https://github.com/hackclub/putting-the-you-in-cpu/) 上提交问题或 PR。
+
+<img src='/images/the-end.png' loading='eager' alt='结束。' width='1367' height='331' style='max-width: 600px; margin: 30px auto; margin-bottom: 150px;' />
+
+……但是等等，还有更多！
+
+## 奖励：翻译 C 概念
+
+如果你自己做过一些低级编程，你可能知道什么是栈和堆，你可能使用过 `malloc`。你可能没有想太多关于它们是如何实现的！
+
+首先，线程的栈是一个固定数量的内存，它被映射到虚拟内存中的某个高位。在大多数（虽然[不是全部](https://stackoverflow.com/a/664779)）架构上，栈指针从栈内存的顶部开始，并在递增时向下移动。物理内存不会为整个映射的栈空间预先分配；相反，使用按需分页来延迟分配内存，当到达栈的帧时。
+
+听到像 `malloc` 这样的堆分配函数不是系统调用可能会令人惊讶。相反，堆内存管理由 libc 实现提供！`malloc`、`free` 等是复杂的过程，libc 本身跟踪内存映射细节。在底层，用户空间堆分配器使用系统调用，包括 `mmap`（它可以映射不仅仅是文件）和 `sbrk`。
+
+## 奖励：花絮
+
+我找不到任何连贯的地方来放置这些，但发现它们很有趣，所以给你。
+
+> *大多数 Linux 用户可能有足够有趣的生活，他们花很少的时间想象页表在内核中是如何表示的。*
+>
+> *<cite>[Jonathan Corbet, LWN](https://lwn.net/Articles/106177/)</cite>*
+
+硬件中断的另一种可视化：
+
+<img src='/images/hardware-interrupt-meme.png' loading='lazy' style='max-width: 350px;' alt='一个 4 面板模因漫画，描绘了一个小鸟在树枝上，语音气泡包含汇编指令。在第二个面板中，另一个语音气泡从框架外出现，喊着"你好，是我键盘！"在第三个面板中，喊叫的来源可见，是框架中的一只大乌鸦，现在喊着"我有一个重要的消息！"在最后一个框架中，小鸟的特写看起来不感兴趣。框架外乌鸦的另一个语音气泡只有字母 E。' width='600' height='625' />
+
+请注意，一些系统调用使用一种称为 vDSO 的技术，而不是跳入内核空间。我没有时间谈论这个，但它非常有趣，我建议[阅读](https://en.wikipedia.org/wiki/VDSO)[它](https://man7.org/linux/man-pages/man7/vdso.7.html)[的](https://0xax.gitbooks.io/linux-insides/content/SysCall/linux-syscall-3.html)内容。
+
+最后，解决 Unix 指控：我确实感到难过，很多特定于执行的东西都是非常特定于 Unix 的。如果你是 macOS 或 Linux 用户，这很好，但它不会让你更接近 Windows 如何执行程序或处理系统调用，尽管 CPU 架构的东西都是一样的。将来我很想写一篇涵盖 Windows 世界的文章。
+
+## 致谢
+
+我在写这篇文章时与 GPT-3.5 和 GPT-4 交谈了很多。虽然它们对我撒谎了很多，大部分信息都是无用的，但它们有时对解决问题非常有帮助。如果你意识到它们的局限性并且对它们说的一切都极度怀疑，LLM 帮助可以是净正面的。也就是说，它们在写作方面很糟糕。不要让它们为你写作。
+
+更重要的是，感谢所有给我校对、鼓励我并帮助我头脑风暴的人类——尤其是 Ani、B、Ben、Caleb、Kara、polypixeldev、Pradyun、Spencer、Nicky（他在[第 4 章](/becoming-an-elf-lord)中画了美妙的精灵）和我可爱的父母。
+
+如果你是一个青少年，你喜欢计算机，你还没有加入 [Hack Club Slack](https://hackclub.com/slack)，你应该现在就加入。如果我没有一个很棒的人社区来分享我的想法和进展，我不会写这篇文章。如果你不是青少年，你应该[给我们钱](https://hackclub.com/philanthropy/)，这样我们就可以继续做很酷的事情。
+
+本文中的所有平庸艺术都是在 [Figma](https://figma.com/) 中绘制的。我使用 [Obsidian](https://obsidian.md/) 进行编辑，有时使用 [Vale](https://vale.sh/) 进行 linting。本文的 Markdown 源代码[在 GitHub 上可用](https://github.com/hackclub/putting-the-you-in-cpu/)，并对未来的挑剔开放，所有艺术都发布在 [Figma 社区页面](https://www.figma.com/community/file/1260699047973407903)上。
+
+<img src='/images/cpu-pleading-face.png' loading='lazy' alt='一个带有可爱恳求表情的 CPU。' width='280' height='280' style='max-width: 120px; margin: 0 auto;' />
