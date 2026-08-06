@@ -1,0 +1,133 @@
+---
+chapter: 4
+title: 成为 Elf 之主
+shortname: ELF
+slug: becoming-an-elf-lord
+updatedAt: 2026-03-22T00:00:00.000Z
+---
+
+import CodeBlock from '../../../components/CodeBlock.astro'
+
+我们对 `execve` 已经相当了解了。在多数路径的尽头，内核会到达一个包含待启动机器码的最终程序。真正跳到代码之前通常还需要准备——例如，程序的不同部分要加载到内存的正确位置。每个程序对不同事物需要不同大小的内存，所以我们有标准文件格式来规定如何为执行设置程序。Linux 支持多种这样的格式，但目前为止最常见的是 *ELF*（executable and linkable format，可执行与可链接格式）。
+
+<p>
+	<img src='/images/gnu-linux-elf-drawing.jpg' loading='eager' style='max-width: 260px; margin: 0 auto;' alt='纸上的马克笔绘画。一位巫师精灵在冥想，一手托着角马（gnu）头，一手托着 Linux 企鹅。精灵拖着声音说「其实 Linux 只是内核，操作系统是…」红马克笔标题：「你听过架子上的精灵！现在准备好…GNU/Linux 上的 Elf。」署名 Nicky。' width='529' height='256' />
+</p>
+<div style='text-align: center;'>
+	<p style='margin-top: -10px;'>
+		（感谢 <a href='https://ncase.me/' target='_blank'>Nicky Case</a> 画了这幅可爱的图。）
+	</p>
+</div>
+
+> **补充：到处都是精灵吗？**
+> 
+> 在 Linux 上跑应用或命令行程序时，极大概率是 ELF 二进制。但在 macOS 上，事实上的格式是 [Mach-O](https://en.wikipedia.org/wiki/Mach-O)。Mach-O 做的事和 ELF 一样，但结构不同。Windows 上 .exe 用的是 [Portable Executable](https://en.wikipedia.org/wiki/Portable_Executable) 格式——同样是不同格式、同一套概念。
+
+在 Linux 内核里，ELF 二进制由 `binfmt_elf` 处理程序负责；它比许多其他处理程序复杂得多，有数千行代码。职责是从 ELF 文件解析出某些细节，并用它们把进程加载进内存并执行。
+
+*我用一点命令行功夫按行数给 binfmt 处理程序排了序：*
+
+<CodeBlock name='Shell session'>
+```
+$ wc -l binfmt_* | sort -nr | sed 1d
+    2181 binfmt_elf.c
+    1658 binfmt_elf_fdpic.c
+     944 binfmt_flat.c
+     836 binfmt_misc.c
+     158 binfmt_script.c
+      64 binfmt_elf_test.c
+```
+</CodeBlock>
+
+## 文件结构
+
+在更深入看 `binfmt_elf` 如何执行 ELF 文件之前，先看看文件格式本身。ELF 文件通常由四部分组成：
+
+<img src='/images/elf-file-structure.png' loading='lazy' style='max-width: 500px; margin: 0 auto;' alt='ELF 文件结构概览：四个顺序部分。1 ELF Header：二进制基本信息，以及 PHT 与 SHT 的位置。2 Program Header Table (PHT)：描述如何、把 ELF 数据加载到内存何处。3 Section Header Table (SHT)：可选的数据「地图」，辅助调试。4 Data：二进制的全部数据。PHT 与 SHT 指向该节。' width='1033' height='786' />
+
+### ELF 头
+
+每个 ELF 文件都有一个 [ELF 头](https://refspecs.linuxfoundation.org/elf/gabi4+/ch4.eheader.html)。它非常重要，传达二进制的基本信息，例如：
+
+- 设计在哪种处理器上运行。ELF 文件可包含不同处理器类型的机器码，如 ARM 和 x86。
+- 二进制是作为可执行文件单独运行，还是作为「动态链接库」被其他程序加载。动态链接是什么，我们马上细说。
+- 可执行文件的入口点。后面的节会规定把 ELF 里的数据加载到内存的哪里。入口点是一个内存地址，指向整个进程加载完成后第一条机器码指令在内存中的位置。
+
+ELF 头总在文件开头。它指定程序头表和节头表的位置，二者可以在文件内任意处。那些表再指向文件别处存放的数据。
+
+### 程序头表
+
+[程序头表](https://refspecs.linuxbase.org/elf/gabi4+/ch5.pheader.html)是一系列条目，包含运行时如何加载和执行二进制的具体细节。每个条目有一个类型字段说明它在规定什么——例如 `PT_LOAD` 表示包含应加载进内存的数据，而 `PT_NOTE` 表示段里是信息性文本，不一定要加载到某处。
+
+<img src='/images/elf-program-header-types.png' loading='lazy' style='max-width: 500px; margin: 0 auto;' alt='常见程序头类型表。Type 1 PT_LOAD：要加载进内存的数据。Type 2 PT_NOTE：自由文本如版权、版本等。Type 3 PT_DYNAMIC：动态链接信息。Type 4 PT_INTERP：「ELF 解释器」路径。' width='904' height='338' />
+
+每个条目说明其数据在文件中的位置，有时还说明如何加载进内存：
+
+- 指向其数据在 ELF 文件内的位置。
+- 可指定数据应加载到哪个虚拟内存地址。若段本就不打算加载进内存，通常留空。
+- 两个字段规定数据长度：一个是文件中的长度，一个是要创建的内存区域长度。若内存区域比文件中更长，多出的部分填零。这有利于希望在运行时有一块静态可用内存的程序；这些空内存段通常叫 [BSS](https://en.wikipedia.org/wiki/.bss) 段。
+- 最后，标志字段规定加载进内存后允许哪些操作：`PF_R` 可读，`PF_W` 可写，`PF_X` 表示可在 CPU 上执行的代码。
+
+### 节头表
+
+[节头表](https://refspecs.linuxbase.org/elf/gabi4+/ch4.sheader.html)是一系列关于*节*（section）的条目。节信息像一张地图，标出 ELF 文件内部的数据。它让[调试器一类程序](https://www.sourceware.org/gdb/)更容易理解数据不同部分的预期用途。
+
+<img src='/images/elf-section-header-table-diagram.png' loading='lazy' style='max-width: 450px; margin: 0 auto;' alt='古老藏宝图，有岛屿、河流、棕榈树和罗盘玫瑰。部分岛屿标着 .text、.data、.shstrtab、.bss 等 ELF 节名。图注：「The section header table is like a map for binary data.」' width='701' height='617' />
+
+例如，程序头表可以指定一大片数据一起加载进内存。那单个 `PT_LOAD` 块可能既含代码又含全局变量！要*运行*程序，没必要把它们分开指定；CPU 从入口点开始往前走，在程序请求时访问数据。但要*分析*程序的调试器等软件，需要确切知道每个区域起止，否则可能把写着 “hello” 的文本当成代码解码（那不是合法代码，会炸）。这些信息就存在节头表里。
+
+虽然通常会包含，节头表其实是可选的。完全去掉节头表，ELF 文件仍可完美运行；想隐藏代码在做什么的开发者，有时会故意剥离或破坏 ELF 二进制的节头表，以[让解码更难](https://binaryresearch.github.io/2019/09/17/Analyzing-ELF-Binaries-with-Malformed-Headers-Part-1-Emulating-Tiny-Programs.html)。
+
+每个节有名称、类型和一些标志，规定预期如何使用和解码。标准名称按惯例通常以点开头。最常见的节是：
+
+- `.text`：要加载进内存并在 CPU 上执行的机器码。类型 `SHT_PROGBITS`，带 `SHF_EXECINSTR` 标为可执行，以及 `SHF_ALLOC` 表示会为执行加载进内存。（别被名字骗了，它仍然只是二进制机器码！我一直觉得叫 `.text` 有点怪，因为它并不是可读的「文本」。）
+- `.data`：可执行文件中硬编码的、要加载进内存的已初始化数据。例如含有某段文本的全局变量可能在这一节。写底层代码时，static 变量就在这里。类型也是 `SHT_PROGBITS`，意思是「给程序用的信息」。标志是 `SHF_ALLOC` 和 `SHF_WRITE`，标为可写内存。
+- `.bss`：前面说过，常见的是有一些一开始清零的已分配内存。在 ELF 文件里塞一堆空字节很浪费，所以用一种叫 BSS 的特殊段类型。调试时知道 BSS 段很有用，所以节头表也有条目规定要分配的内存长度。类型 `SHT_NOBITS`，标志 `SHF_ALLOC` 和 `SHF_WRITE`。
+- `.rodata`：像 `.data` 但是只读。在非常基础的、运行 `printf("Hello, world!")` 的 C 程序里，字符串 “Hello world!” 会在 `.rodata` 节，真正的打印代码在 `.text` 节。
+- `.shstrtab`：有趣的实现细节！节名本身（如 `.text` 和 `.shstrtab`）并不直接写在节头表里。每个条目包含一个偏移，指向 ELF 文件中存其名称的位置。这样节头表每条可以一样大，更容易解析——名称偏移是固定大小的数，而直接在表里放名字会是变长字符串。所有这些名称数据存在自己的节 `.shstrtab` 里，类型 `SHT_STRTAB`。
+
+### 数据
+
+程序头表和节头表条目都指向 ELF 文件内的数据块：无论是要加载进内存、标明程序代码在哪，还是仅仅命名各节。这些不同的数据都放在 ELF 文件的数据部分。
+
+<img src='/images/elf-data-section.png' loading='lazy' style='max-width: 680px;' alt='示意图：ELF 文件不同部分如何引用数据块内的位置。连续数据集合末端淡出，含 ELF 解释器路径、节标题 .rodata、字符串 Hello, world! 等。若干示例 ELF 节浮在数据块上方，箭头指向其数据。例如 PHT 与 SHT 的 data 段示例都指向同一段 Hello, world! 文本。SHT 条目的标签也存在数据块里。' width='1210' height='386' />
+
+## 链接简述
+
+回到 `binfmt_elf` 代码：内核关心程序头表里的两类条目。
+
+`PT_LOAD` 段规定所有程序数据（如 `.text` 和 `.data` 节）需要加载到内存的哪里。内核从 ELF 文件读这些条目，把数据加载进内存，好让 CPU 执行程序。
+
+内核关心的另一类程序头表条目是 `PT_INTERP`，它指定「动态链接运行时」。
+
+在谈动态链接之前，先谈一般意义上的「链接」。程序员往往把程序建在可复用代码库之上——例如我们前面谈过的 libc。把源码变成可执行二进制时，叫链接器（linker）的程序会解析所有这些引用：找到库代码并拷进二进制。这个过程叫*静态链接*（static linking），意思是外部代码直接包含在分发的文件里。
+
+不过有些库超级常见。你会发现几乎天下所有程序都用 libc，因为它是通过系统调用与 OS 交互的规范接口。给电脑上每个程序都塞一份单独的 libc 拷贝，太浪费空间。而且，如果库里的 bug 能在一个地方修掉，而不用等每个用到该库的程序更新，会很不错。动态链接就是这些问题的解法。
+
+若静态链接的程序需要库 `bar` 里的函数 `foo`，程序会包含 `foo` 的完整拷贝。但若是动态链接，它只包含一条引用：「我需要库 `bar` 里的 `foo`。」程序运行时，`bar` 最好已装在电脑上，于是 `foo` 的机器码可按需加载进内存。若电脑上的 `bar` 库更新了，下次运行程序就会加载新代码，程序本身无需改动。
+
+<img src='/images/static-vs-dynamic-linking.png' loading='lazy' alt='静态链接与动态链接对比图。左侧静态链接：名为 foo 的代码内容分别拷进两个程序，配文说库函数在构建时从开发者电脑拷进每个二进制。右侧动态链接：每个程序含 foo 函数名，箭头指向用户电脑上的 foo；配文说二进制引用库函数名，在运行时从用户电脑加载。' width='1800' height='860' class='big' style='--max-width: 900px;' />
+
+## 野外的动态链接
+
+在 Linux 上，像 `bar` 这样可动态链接的库通常打包成 .so（Shared Object，共享对象）扩展名的文件。这些 .so 文件和程序一样是 ELF——你可能还记得 ELF 头有字段标明文件是可执行还是库。此外，共享对象在节头表里有 `.dynsym` 节，包含文件导出哪些符号、可被动态链接的信息。
+
+在 Windows 上，像 `bar` 这样的库打包成 .dll（**d**ynamic **l**ink **l**ibrary）文件。macOS 用 .dylib（**dy**namically linked **lib**rary）扩展名。就像 macOS 应用和 Windows .exe 一样，它们和 ELF 格式略有不同，但是同一概念和手法。
+
+两种链接的有趣区别是：静态链接时，只用到的库部分会进可执行文件，因而加载进内存。动态链接时，*整个库*都会加载进内存。初听起来可能更低效，但实际上让现代操作系统能省*更多*空间：库加载进内存一次，再在进程间共享那份代码。只有代码能共享，因为库对不同程序需要不同状态，但省下的 RAM 仍可到几十到几百兆字节量级。
+
+## 执行
+
+跳回内核运行 ELF 文件：若正在执行的二进制是动态链接的，OS 不能立刻跳到二进制代码，因为会缺代码——记住，动态链接程序只有对所需库函数的引用！
+
+要运行二进制，OS 需要弄清需要哪些库、加载它们、把所有命名指针换成真正的跳转指令，*然后*才启动真正的程序代码。这是与 ELF 格式深度交互的极复杂代码，所以通常是独立程序而不是内核的一部分。ELF 文件在程序头表的 `PT_INTERP` 条目里指定要用的程序路径（通常类似 `/lib64/ld-linux-x86-64.so.2`）。
+
+读完 ELF 头并扫过程序头表后，内核可为新程序搭建内存结构。它先把所有 `PT_LOAD` 段加载进内存，填充程序的静态数据、BSS 空间和机器码。若程序是动态链接的，内核还得执行 [ELF 解释器](https://unix.stackexchange.com/questions/400621/what-is-lib64-ld-linux-x86-64-so-2-and-why-can-it-be-used-to-execute-file)（`PT_INTERP`），所以也会把解释器的数据、BSS 和代码加载进内存。
+
+现在内核需要设置 CPU 返回用户态时要恢复的指令指针。若可执行文件是动态链接的，内核把指令指针设到内存中 ELF 解释器代码的起点；否则设到可执行文件的起点。
+
+内核几乎准备好从系统调用返回了（记住，我们还在 `execve` 里）。它把 `argc`、`argv` 和环境变量压到栈上，供程序开始时读取。
+
+寄存器现在被清零。处理系统调用前，内核会把当前寄存器值存到栈上，以便切回用户空间时恢复。返回用户空间前，内核把栈的这部分清零。
+
+终于，系统调用结束，内核返回用户态。它恢复寄存器（现在是零），并跳到存储的指令指针。那个指令指针现在是新程序（或 ELF 解释器）的起点，当前进程已被替换！

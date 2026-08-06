@@ -1,0 +1,137 @@
+---
+chapter: 5
+title: 你电脑里的翻译官
+shortname: 分页
+slug: the-translator-in-your-computer
+updatedAt: 2026-03-22T00:00:00.000Z
+---
+
+import CodeBlock from '../../../components/CodeBlock.astro'
+
+到目前为止，每次我谈读写内存都有点含糊。例如，ELF 文件会指定把数据加载到具体内存地址，那为什么不同进程试图使用冲突的内存不会出问题？为什么每个进程似乎有不同的内存环境？
+
+另外，我们到底是怎么走到这儿的？我们知道 `execve` 是*用新程序替换当前进程*的系统调用，但这解释不了如何启动多个进程。更解释不了第一个程序如何运行——哪只鸡（进程）下了（派生）所有其他蛋（其他进程）？
+
+我们快到旅程终点了。回答完这两个问题后，你对电脑从启动到运行你此刻正在用的软件，就会有一个大体完整的理解。
+
+## 内存是假的
+
+那么……关于内存。其实当 CPU 读或写某个内存地址时，它指的并不是*物理*内存（RAM）里的那个位置，而是*虚拟*内存空间中的位置。
+ 
+CPU 与一块叫[*内存管理单元*](https://en.wikipedia.org/wiki/Memory_management_unit)（MMU）的芯片对话。MMU 像带字典的翻译官，把虚拟内存位置翻译成 RAM 中的位置。当 CPU 被指示从地址 `0xfffaf54834067fe2` 读取时，它请 MMU 翻译该地址。MMU 查字典，发现对应物理地址是 `0x53a4b64a90179fe2`，把数字发回 CPU。CPU 再从 RAM 里的那个地址读取。
+
+<img src='/images/virtual-memory-mmu-example.png' loading='eager' style='max-width: 640px; margin: 0 auto;' alt='笑脸 CPU 与 MMU 对话的画。MMU 是高芯片，戴图书馆眼镜，抱着大书「Dictionary: Pointers 0x0000 to 0xffff」。CPU 请 MMU 翻译一个长内存地址。MMU 想了想，回以不同的指针。' width='1207' height='454' />
+
+电脑刚启动时，内存访问直接打到物理 RAM。启动后很快，OS 创建翻译字典，并告诉 CPU 开始使用 MMU。
+
+这本字典实际叫*页表*（page table），这种翻译每次内存访问的系统叫*分页*（paging）。页表中的条目叫*页*（page），每一条表示某块虚拟内存如何映射到 RAM。这些块总是固定大小，不同处理器架构有不同页大小。x86-64 默认 4 KiB 页，意味着每页规定 4,096 字节长的内存块如何映射。
+
+换句话说，用 4 KiB 页时，地址最低 12 位在 MMU 翻译前后总相同——12，因为索引翻译后 4,096 字节的页需要这么多位。
+
+x86-64 也允许操作系统启用更大的 2 MiB 或 4 GiB 页，可提高地址翻译速度，但会增加内存碎片与浪费。页越大，地址中被 MMU 翻译的部分越小。
+
+<img src='/images/4kib-paging-address-breakdown.png' loading='lazy' style='max-width: 400px; margin: 0 auto;' alt='4 KiB 分页下内存地址分解。最低 12 位索引页内偏移，其余位由 MMU 翻译并成为页起始地址。' width='760' height='310' />
+
+页表本身就住在 RAM 里。它可以有数百万条，但每条只有几个字节量级，所以页表本身不太占空间。
+
+启动时启用分页：内核先在 RAM 中构建页表，再把页表起始物理地址存进页表基址寄存器（PTBR），最后启用分页，让所有内存访问经 MMU 翻译。在 x86-64 上，控制寄存器 3（CR3）的高 20 位充当 PTBR。CR0 的第 31 位（标为 PG，Paging）置 1 以启用分页。
+
+分页系统的魔力在于：电脑运行时页表可以编辑。这就是每个进程能有自己隔离内存空间的原因——OS 在进程间切换上下文时，一项重要任务就是把虚拟内存空间重映射到物理内存的不同区域。假设有两个进程：进程 A 可以把代码和数据（多半从 ELF 加载！）放在 `0x0000000000400000`，进程 B 也可以从*同一个*地址访问自己的代码和数据。这两个进程甚至可以是同一程序的实例，因为它们并没有真的在抢那片地址范围！进程 A 的数据在物理内存里离进程 B 很远，内核在切到该进程时把它映射到 `0x0000000000400000`。
+
+<img src='/images/process-virtual-memory-mapping.png' loading='lazy' alt='两个不同进程请一个拟人化桌面电脑剪贴画翻译同一内存地址。拟人电脑用物理内存连续带中的不同区段分别回应两个进程。' width='2101' height='1010' />
+
+> **补充：诅咒级的 ELF 事实**
+>
+> 在某些情况下，`binfmt_elf` 必须把内存第一页映射为零。有些为 UNIX System V Release 4.0（SVr4，1988 年首个支持 ELF 的 OS）写的程序依赖空指针可读。不知怎的，有些程序至今还依赖这行为。
+>
+> 实现这一点的 Linux 内核开发者似乎[有点不高兴](https://github.com/torvalds/linux/blob/22b8cc3e78f5448b4c5df00303817a9137cd663f/fs/binfmt_elf.c#L1322-L1329)：
+>
+> *「Why this, you ask???  Well SVr4 maps page 0 as read-only, and some applications 'depend' upon this behavior. Since we do not have the power to recompile these, we emulate the SVr4 behavior. Sigh.」*
+>
+> 唉。
+
+## 分页带来的安全
+
+内存分页带来的进程隔离改善了代码体验（进程不必感知其他进程就能用内存），也创造了一层安全：进程不能访问其他进程的内存。这半回答了本文开头的一个原始问题：
+
+> 如果程序直接在 CPU 上跑，而 CPU 又能直接访问 RAM，为什么代码不能访问其他进程的内存，甚至——天哪——内核的内存？
+
+*还记得吗？感觉像很久以前了……*
+
+那内核内存呢？首先：内核显然需要存大量自己的数据，以跟踪所有运行中的进程，甚至页表本身。每次硬件中断、软件中断或系统调用触发、CPU 进入内核模式时，内核代码需要以某种方式访问那块内存。
+
+Linux 的做法是始终把虚拟内存空间的上半部分分给内核，因此 Linux 被称为[*高半内核*](https://wiki.osdev.org/Higher_Half_Kernel)（higher half kernel）。Windows 用[类似](https://learn.microsoft.com/en-us/windows-hardware/drivers/kernel/overview-of-windows-memory-space)手法，而 macOS……[稍微](https://www.researchgate.net/figure/Overview-of-the-Mac-OS-X-virtual-memory-system-which-resides-inside-the-Mach-portion-of_fig1_264086271)[更](https://developer.apple.com/library/archive/documentation/Performance/Conceptual/ManagingMemory/Articles/AboutMemory.html)[复杂](https://developer.apple.com/library/archive/documentation/Darwin/Conceptual/KernelProgramming/vm/vm.html)一点，读着读着我脑子都从耳朵流出来了。\~(++)\~
+
+<img src='/images/higher-half-kernel-memory-map.png' loading='lazy' alt='虚拟内存空间画成一条带。左半标用户空间：执行中程序的内存。右半标内核空间：内核相关一切的固定区域。中间分割点标地址 0x8000000000000000。' width='2161' height='230' />
+
+若用户态进程能读或写内核内存，安全会很糟糕，所以分页还启用了第二层安全：每个页必须指定权限标志。一个标志决定区域可写还是只读。另一个标志告诉 CPU 只有内核模式才能访问该区域内存。后者用来保护整个高半内核空间——内核内存空间其实出现在用户空间程序的虚拟内存映射里，它们只是没有权限访问。
+
+<img src='/images/page-table-entry-permissions.png' loading='lazy' style='max-width: 260px;' alt='页表项权限表。Present: true。Read/write: read only。User/kernel: all modes。Dirty: false。Accessed: true。等等。' width='650' height='639' />
+
+页表本身实际上也在内核内存空间里！定时芯片为进程切换触发硬件中断时，CPU 把特权级切到内核模式并跳到 Linux 内核代码。处于内核模式（Intel 0 环）让 CPU 能访问受内核保护的内存区域。内核再写页表（位于内存上半的某处），为新进程重映射虚拟内存的下半。内核切到新进程、CPU 进入用户模式后，就再也访问不了任何内核内存了。
+
+几乎每一次内存访问都经过 MMU。中断描述符表里的处理程序指针？那些地址也指向内核的虚拟内存空间。
+
+## 分层分页与其他优化
+
+64 位系统的内存地址长 64 位，意味着 64 位虚拟内存空间足有 16 [exbibytes](https://en.wiktionary.org/wiki/exbibyte)（艾比字节）。那大得离谱，远超今天或近期任何电脑。就我所知，史上内存最多的电脑是 [Blue Waters 超级计算机](https://en.wikipedia.org/wiki/Blue_Waters)，超过 1.5 拍字节 RAM。那仍不到 16 EiB 的 0.01%。
+
+若虚拟内存空间每 4 KiB 都需要页表项，你需要 4,503,599,627,370,496 个页表项。每项 8 字节，仅存页表就需要 32 培比字节 RAM。你可能注意到，这仍然大于电脑史上 RAM 的世界纪录。
+
+> **补充：为什么用奇怪的单位？**
+> 
+> 我知道这不常见而且真丑，但我觉得有必要清楚区分二进制字节单位（2 的幂）和十进制单位（10 的幂）。千字节 kB 是 SI 单位，表示 1,000 字节。 kibibyte KiB 是 IEC 推荐单位，表示 1,024 字节。在 CPU 和内存地址语境里，字节数通常是 2 的幂，因为计算机是二进制系统。用 KB（或更糟，kB）表示 1,024 会更含糊。
+
+因为为整个可能的虚拟内存空间准备连续页表项既不可能（至少极不实际），CPU 架构实现了*分层分页*（hierarchical paging）。在分层分页系统中，有多级粒度越来越细的页表。顶层条目覆盖大块内存并指向更小块的页表，形成树结构。4 KiB 或无论页大小是多少的块的单项，是树的叶子。
+
+x86-64 历史上使用 4 级分层分页。在此系统中，每个页表项通过用地址的一部分偏移包含表的起点来找到。这部分从最高有效位开始，作为前缀，使该条目覆盖所有以那些位开头的地址。条目指向包含该内存块子树的下一级表的起点，再用下一批位索引。
+
+x86-64 的 4 级分页设计者还选择忽略所有虚拟指针的最高 16 位，以节省页表空间。48 位给你 128 TiB 虚拟地址空间，被认为足够大了。（完整 64 位会给你 16 EiB，有点……多。）
+
+由于跳过了前 16 位，用于索引第一级页表的「最高有效位」实际从第 47 位而不是第 63 位开始。这也意味着本章前面的高半内核图在技术上不准确；内核空间起始地址应画成小于 64 位的地址空间的中点。
+
+<img src='/images/multilevel-paging-explainer.png' loading='lazy' class='big' alt='x86-64 上 4 级分页的大而详细的彩色图。展示四级页表，高亮每级作「前缀」的位。也显示用这些前缀位索引表：把位的值加到表基址。每表中的条目指向下一表的起点，除了最终 1 级指向 RAM 中 4 KiB 块起点。MMU 把最低 12 位加到该地址得到最终物理地址。有一张 4 级表、n 平方张 3 级表，以此类推。' width='2981' height='1118' />
+
+分层分页解决了空间问题：因为在树的任一级，指向下一项的指针可以是 null（`0x0`）。这样可以省略页表的整棵子树，意味着未映射的虚拟内存区域不占 RAM。对未映射地址的查找可以很快失败，因为 CPU 在树上层看到空条目就能立刻报错。页表项还有存在标志，即使地址看起来有效也可标为不可用。
+
+分层分页的另一好处是能高效换掉虚拟内存空间的大段。一大片虚拟内存可能为一个进程映射到物理内存的一个区域，为另一进程映射到不同区域。内核可把两份映射都存在内存里，切换进程时只更新树顶层的指针。若整个内存空间映射存成扁平条目数组，内核得更新大量条目，既慢还得独立跟踪每个进程的内存映射。
+
+我说 x86-64「历史上」使用 4 级分页，是因为近期处理器实现了 [5 级分页](https://en.wikipedia.org/wiki/Intel_5-level_paging)。5 级分页再加一层间接，并多 9 位寻址，把地址空间扩到 57 位地址下的 128 PiB。包括 Linux 在内的操作系统[自 2017 年起](https://lwn.net/Articles/717293/)支持 5 级分页，近期 Windows 10/11 服务器版也支持。
+
+> **补充：物理地址空间限制**
+> 
+> 就像操作系统不会把全部 64 位用于虚拟地址，处理器也不会用完整 64 位物理地址。4 级分页是标准时，x86-64 CPU 不超过 46 位，意味着物理地址空间限为仅 64 TiB。有了 5 级分页，支持扩展到 52 位，物理地址空间 4 PiB。
+>
+> 在 OS 层面，虚拟地址空间大于物理地址空间是有利的。正如 Linus Torvalds [所说](https://www.realworldtech.com/forum/?threadid=76912&curpostid=76973)：「[i]t needs to be bigger, by a factor of _at least_ two, and that's quite frankly pushing it, and you're much better off having a factor of ten or more. Anybody who doesn't get that is a moron. End of discussion.」
+
+## 交换与按需分页
+
+内存访问可能因几种原因失败：地址可能越界、可能未被页表映射，或有条目但标为不存在。任何这些情况下，MMU 都会触发叫*缺页异常*（page fault）的硬件中断，让内核处理问题。
+
+有时这次读确实非法或被禁止。这时内核多半会用[段错误](https://en.wikipedia.org/wiki/Segmentation_fault)（segmentation fault）终止程序。
+
+<CodeBlock name='Shell session'>
+```
+$ ./program
+Segmentation fault (core dumped)
+$
+```
+</CodeBlock>
+
+> **补充：segfault 本体论**
+> 
+> 「Segmentation fault」在不同语境含义不同。MMU 在无权限读内存时触发叫「segmentation fault」的硬件中断，但「segmentation fault」也是 OS 可发给运行中程序的信号名，用于因任何非法内存访问而终止它们。
+
+另一些情况下，内存访问可以*故意*失败，让 OS 填充内存，再*把控制权交回 CPU 重试*。例如，OS 可以把磁盘上的文件映射到虚拟内存而不真正加载进 RAM，等地址被请求、缺页发生时再加载进物理内存。这叫*按需分页*（demand paging）。
+
+<img src='/images/demand-paging-with-page-faults-comic.png' loading='lazy' class='big' alt='三格漫画风格图：如何用硬件中断实现按需分页。第 1 格：CPU 与 MMU 对话。CPU 说「read 0xfff」，MMU 困惑，然后 MMU 向 CPU 发闪电标「page fault!」。第 2 格标「page fault handler」锯齿边框，CPU 把数据加载进 RAM 后从中断返回。第 3 格回到对话。MMU 心想「噢嘿，页现在在了」，回复 CPU 原请求：「Here&apos;s your memory!」CPU 说谢谢。' width='3001' height='703' style='--max-width: 1000px;' />
+
+其一，这让 [mmap](https://man7.org/linux/man-pages/man2/mmap.2.html) 这类可把整个文件惰性映射到虚拟内存的系统调用得以存在。如果你熟悉 LLaMa.cpp（泄露的 Facebook 语言模型运行时），Justine Tunney 最近通过[让所有加载逻辑用 mmap](https://justine.lol/mmap/) 显著优化了它。（若你没听过她，[去看看她的东西](https://justine.lol/)！Cosmopolitan Libc 和 APE 真的很酷，如果你喜欢这篇文章可能会感兴趣。）
+
+> *显然关于 Justine 参与这次改动有[很多](https://rentry.org/Jarted)[drama](https://news.ycombinator.com/item?id=35413289)[争议](https://news.ycombinator.com/item?id=35458004)。特意提一句，免得被随机网友骂。我得坦白没读完大部分 drama，而我说 Justine 的东西很酷仍然非常成立。*
+
+当你执行程序及其库时，内核其实并不把任何东西加载进内存。它只创建文件的 mmap——CPU 试图执行代码时，页立刻缺页，内核用真正的内存块替换该页。
+
+按需分页还启用了你大概见过、名叫「交换」（swapping）或「分页」的技术。操作系统可把内存页写到磁盘，再从物理内存移除，但在虚拟内存中保留且 present 标志为 0，从而释放物理内存。若读到那块虚拟内存，OS 可再从磁盘恢复到 RAM，并把 present 标志设回 1。OS 可能得把另一段 RAM 换出去，给从磁盘加载的内存腾地方。磁盘读写慢，所以操作系统用[高效的页置换算法](https://en.wikipedia.org/wiki/Page_replacement_algorithm)尽量少做交换。
+
+一个有趣的 hack 是用页表物理内存指针存文件在物理存储中的位置。因为 MMU 一看到负的 present 标志就会缺页，它们是非法内存地址也无所谓。并非所有情况都实用，但想想还挺有意思。

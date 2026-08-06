@@ -1,16 +1,16 @@
 ---
-import '../styles/global.css'
-import '../styles/chapter.css'
+import '../../styles/global.css'
+import '../../styles/chapter.css'
 
 import { render } from 'astro:content'
-import TOCList from '../components/TOCList.astro'
-import SEO from '../components/SEO.astro'
-import ExternalNav from '../components/ExternalNav.astro'
-import ColoredTitle from '../components/ColoredTitle.astro'
-import EditButton from '../components/EditButton.astro'
-import ScrollPadding from '../components/ScrollPadding.astro'
-import OldNav from '../components/OldNav.astro'
-import { t } from '../i18n/ui'
+import TOCList from '../../components/TOCList.astro'
+import SEO from '../../components/SEO.astro'
+import ExternalNav from '../../components/ExternalNav.astro'
+import ColoredTitle from '../../components/ColoredTitle.astro'
+import EditButton from '../../components/EditButton.astro'
+import ScrollPadding from '../../components/ScrollPadding.astro'
+import OldNav from '../../components/OldNav.astro'
+import { t } from '../../i18n/ui'
 import {
 	getChapters,
 	getChapter,
@@ -18,9 +18,9 @@ import {
 	homeHref,
 	formatChapterLabel,
 	formatContinueLabel
-} from '../i18n/utils'
+} from '../../i18n/utils'
 
-const locale = 'en' as const
+const locale = 'zh' as const
 const strings = t(locale)
 const slug = Astro.params.slug as string
 
@@ -37,21 +37,21 @@ const nextChapter = allChapters
 	.find(otherChapter => otherChapter.data.chapter === chapter.data.chapter + 1)
 
 export async function getStaticPaths() {
-	const chapters = await getChapters('en')
+	const chapters = await getChapters('zh')
 	return chapters
 		.filter(chapter => chapter.data.chapter !== 0) // Skip the intro
 		.map(chapter => ({ params: { slug: chapter.data.slug } }))
 }
 ---
 
-<html lang='en'>
+<html lang='zh-CN'>
 <head>
 	<meta charset='utf-8' />
 	<meta name='viewport' content='width=device-width, initial-scale=1' />
 
 	<link rel='preconnect' href='https://fonts.googleapis.com' />
 	<link rel='preconnect' href='https://fonts.gstatic.com' crossorigin />
-	<link href='https://fonts.googleapis.com/css2?family=IBM+Plex+Mono&family=IBM+Plex+Sans:wght@400;700&family=IBM+Plex+Serif:ital,wght@0,400;0,700;1,400;1,700&display=swap' rel='stylesheet' />
+	<link href='https://fonts.googleapis.com/css2?family=IBM+Plex+Mono&family=IBM+Plex+Sans:wght@400;700&family=IBM+Plex+Serif:ital,wght@0,400;0,700;1,400;1,700&family=Noto+Serif+SC:wght@400;700&display=swap' rel='stylesheet' />
 
 	<SEO locale={locale} chapterSlug={chapter.data.slug} />
 	<script defer data-domain='cpu.land' src='https://plausible.io/js/script.js' />
@@ -88,7 +88,7 @@ export async function getStaticPaths() {
 	<main>
 		<header class='content'>
 			<h1 id='intro'>
-				<div class='chapter'>{formatChapterLabel(locale, chapter.data.chapter)}<span class='sr-only'>:</span></div>
+				<div class='chapter'>{formatChapterLabel(locale, chapter.data.chapter)}<span class='sr-only'>：</span></div>
 				<div class='title'>
 					{chapter.data.title}
 					<EditButton locale={locale} chapterSlug={chapter.data.slug} />
@@ -101,7 +101,7 @@ export async function getStaticPaths() {
 				<p>
 					{strings.partOf}{' '}
 					<a href={homeHref(locale)} style='--color: transparent;'><ColoredTitle locale={locale} /></a>
-					{locale === 'en' ? ': ' : ''}{strings.partOfSuffix}
+					{strings.partOfSuffix}
 				</p>
 				<OldNav locale={locale} chapterSlug={chapter.data.slug} />
 			</div>

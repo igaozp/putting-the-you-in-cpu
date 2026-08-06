@@ -1,0 +1,69 @@
+---
+import { locales, localeLabels, type Locale } from '../i18n/ui'
+import { onePagerHref, switchLocalePath } from '../i18n/utils'
+
+export interface Props {
+	locale: Locale
+	chapterSlug?: string
+	/** When true, switch between localized one-pager editions */
+	onePager?: boolean
+	/** Compact inline style for nav bars */
+	compact?: boolean
+}
+
+const { locale, chapterSlug = 'intro', onePager, compact } = Astro.props
+
+function hrefFor(loc: Locale) {
+	if (onePager) return onePagerHref(loc)
+	return switchLocalePath(locale, loc, chapterSlug)
+}
+---
+
+<nav class:list={['lang-switcher', { compact }]} aria-label={locale === 'zh' ? '语言' : 'Language'}>
+	{locales.map((loc, i) => (
+		<>
+			{i > 0 ? <span class='sep' aria-hidden='true'>·</span> : null}
+			{loc === locale ? (
+				<strong aria-current='page'>{localeLabels[loc]}</strong>
+			) : (
+				<a href={hrefFor(loc)} hreflang={loc} lang={loc}>
+					{localeLabels[loc]}
+				</a>
+			)}
+		</>
+	))}
+</nav>
+
+<style>
+	.lang-switcher {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.4em;
+		font-family: var(--font-sans, system-ui, sans-serif);
+		font-size: 0.9em;
+		line-height: 1;
+	}
+
+	.lang-switcher.compact {
+		font-size: 0.85em;
+	}
+
+	.lang-switcher a {
+		text-decoration: none;
+		opacity: 0.75;
+	}
+
+	.lang-switcher a:hover {
+		opacity: 1;
+		text-decoration: underline;
+	}
+
+	.lang-switcher strong {
+		font-weight: 700;
+	}
+
+	.lang-switcher .sep {
+		opacity: 0.4;
+		user-select: none;
+	}
+</style>

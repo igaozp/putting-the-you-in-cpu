@@ -1,8 +1,8 @@
 :root {
-	--font-serif: 'IBM Plex Serif', serif;
-	--font-sans: 'IBM Plex Sans', sans-serif;
+	--font-serif: 'IBM Plex Serif', 'Noto Serif SC', 'Source Han Serif SC', 'Songti SC', serif;
+	--font-sans: 'IBM Plex Sans', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif;
 	--font-mono: 'IBM Plex Mono', monospace;
-	--font-main-title: 'Phantom Sans', 'IBM Plex Serif', serif;
+	--font-main-title: 'Phantom Sans', 'IBM Plex Serif', 'Noto Serif SC', serif;
 
 	--toc-width: 0px;
 }

@@ -1,26 +1,35 @@
 ---
-import { getEntry, type CollectionEntry } from 'astro:content'
+import type { Locale } from '../i18n/ui'
+import { t, locales, defaultLocale } from '../i18n/ui'
+import { getChapter, chapterHref, homeHref } from '../i18n/utils'
 
 interface Props {
-	chapterSlug: CollectionEntry<'chapters'>['id']
+	locale: Locale
+	chapterSlug: string
 }
 
-const { chapterSlug } = Astro.props
-const chapter = (await getEntry('chapters', chapterSlug))!
+const { locale, chapterSlug } = Astro.props
+const chapter = (await getChapter(locale, chapterSlug))!
+const strings = t(locale)
 
 const bannerUrl = new URL('/banner.png', Astro.site)
 const bannerAlt = ''
 const bannerWidth = 1280
 const bannerHeight = 640
 
-const canonicalUrl = new URL(Astro.url.pathname, Astro.site)
-canonicalUrl.pathname = canonicalUrl.pathname.replace(/\/$/, '') // Strip slash from the end of the path
+const canonicalUrl = new URL(
+	chapter.data.chapter === 0
+		? homeHref(locale)
+		: chapterHref(locale, chapter.data.slug, chapter.data.chapter),
+	Astro.site
+)
 
-const description = 'Curious exactly what happens when you run a program on your computer? Learn how multiprocessing works, what system calls really are, how computers manage memory with hardware interrupts, and how Linux loads executables.'
+const description = strings.abstract
 const publishedAt = new Date(2023, 6, 17)
-const articleTitle = 'Putting the "You" in CPU'
+const articleTitle = strings.articleTitle
 const chapterTitle = chapter.data.title.replace(/[“”]/g, '"')
-const keywords = [ 'unix', 'linux', 'mmu', 'paging', 'memory management', 'cpu', 'program execution', 'elf', 'elf format', 'timeslicing', 'fork', 'cow' ]
+const keywords = [...strings.keywords]
+const ogLocale = locale === 'zh' ? 'zh_CN' : 'en_US'
 ---
 
 <title>{`${chapterTitle} | ${articleTitle}`}</title>
@@ -33,6 +42,29 @@ const keywords = [ 'unix', 'linux', 'mmu', 'paging', 'memory management', 'cpu',
 <meta property='og:url' content={canonicalUrl} />
 <link rel='canonical' href={canonicalUrl} />
 
+{locales.map(loc => (
+	<link
+		rel='alternate'
+		hreflang={loc}
+		href={new URL(
+			chapter.data.chapter === 0
+				? homeHref(loc)
+				: chapterHref(loc, chapter.data.slug, chapter.data.chapter),
+			Astro.site
+		)}
+	/>
+))}
+<link
+	rel='alternate'
+	hreflang='x-default'
+	href={new URL(
+		chapter.data.chapter === 0
+			? homeHref(defaultLocale)
+			: chapterHref(defaultLocale, chapter.data.slug, chapter.data.chapter),
+		Astro.site
+	)}
+/>
+
 <meta property='og:image' content={bannerUrl} />
 <meta property='og:image:alt' content={bannerAlt} />
 <meta property='og:image:width' content={bannerWidth.toString()} />
@@ -44,7 +76,10 @@ const keywords = [ 'unix', 'linux', 'mmu', 'paging', 'memory management', 'cpu',
 <meta name='twitter:site' content='@hackclub' />
 <meta name='twitter:creator' content='@hackclub' />
 <meta property='og:type' content='article' />
-<meta property='og:locale' content='en_US' />
+<meta property='og:locale' content={ogLocale} />
+{locales.filter(l => l !== locale).map(loc => (
+	<meta property='og:locale:alternate' content={loc === 'zh' ? 'zh_CN' : 'en_US'} />
+))}
 
 <meta name='keywords' content={keywords.join(',')} />
 <meta name='theme-color' content='#845ef7' />
@@ -68,6 +103,7 @@ const keywords = [ 'unix', 'linux', 'mmu', 'paging', 'memory management', 'cpu',
 		'@type': 'Article',
 		'headline': `${chapterTitle} - ${articleTitle}`,
 		'abstract': description,
+		'inLanguage': locale === 'zh' ? 'zh-CN' : 'en-US',
 		'image': [
 			{
 				contentUrl: bannerUrl,

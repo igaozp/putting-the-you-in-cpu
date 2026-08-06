@@ -1,15 +1,19 @@
 ---
-import { getEntry } from 'astro:content'
+import type { Locale } from '../i18n/ui'
+import { t } from '../i18n/ui'
+import { getChapter } from '../i18n/utils'
 
 export interface Props {
+	locale: Locale
 	chapterSlug: string
 }
 
-const { chapterSlug } = Astro.props
-const chapter = await getEntry('chapters', chapterSlug)
+const { locale, chapterSlug } = Astro.props
+const chapter = await getChapter(locale, chapterSlug)
+const strings = t(locale)
 
 const url = 'https://github.com/hackclub/putting-the-you-in-cpu/tree/main/src/content/chapters/'
-	+ chapter!.data.chapter + '-' + chapterSlug + '.mdx'
+	+ locale + '/' + chapter!.data.chapter + '-' + chapterSlug + '.mdx'
 ---
 
-<a class='edit-button' href={url} target='_blank'>Edit on GitHub</a>
+<a class='edit-button' href={url} target='_blank'>{strings.editOnGitHub}</a>

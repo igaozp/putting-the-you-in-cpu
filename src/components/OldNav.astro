@@ -1,26 +1,33 @@
 ---
-import { getCollection, type CollectionEntry } from 'astro:content'
+import type { Locale } from '../i18n/ui'
+import { t } from '../i18n/ui'
+import { getChapters, chapterHref, homeHref } from '../i18n/utils'
 
 export interface Props {
-	chapterSlug: CollectionEntry<'chapters'>['id']
+	locale: Locale
+	chapterSlug: string
 }
 
-const { chapterSlug } = Astro.props
-const allChapters = (await getCollection('chapters')).sort((a, b) => a.data.chapter - b.data.chapter)
+const { locale, chapterSlug } = Astro.props
+const strings = t(locale)
+const allChapters = await getChapters(locale)
 ---
 
 <details class='old-nav'>
-	<summary>All Chapters</summary>
+	<summary>{strings.allChapters}</summary>
 
 	<ol start='0'>
 		<li>
-			<a href='/'>Intro</a>
+			<a href={homeHref(locale)}>{strings.intro}</a>
 		</li>
 		{allChapters
 			.filter(chapter => chapter.data.chapter !== 0) // Skip the intro
 			.map(otherChapter => (
-				<li class={otherChapter.id === chapterSlug ? 'active' : ''}>
-					<a href={otherChapter.id} aria-current={otherChapter.id === chapterSlug ? 'page' : undefined}>
+				<li class={otherChapter.data.slug === chapterSlug ? 'active' : ''}>
+					<a
+						href={chapterHref(locale, otherChapter.data.slug, otherChapter.data.chapter)}
+						aria-current={otherChapter.data.slug === chapterSlug ? 'page' : undefined}
+					>
 						{otherChapter.data.title}
 					</a>
 				</li>

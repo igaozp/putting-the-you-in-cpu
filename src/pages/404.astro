@@ -1,12 +1,19 @@
 ---
 import '../styles/global.css'
 import '../styles/404.css'
+import { t, defaultLocale } from '../i18n/ui'
+import { homeHref } from '../i18n/utils'
 
 const url = new URL(Astro.url.pathname, Astro.site)
 url.pathname = url.pathname.replace(/\/$/, '') // Strip slash from the end of the path
+
+// Prefer Chinese UI on /zh/* 404s when path is available at build/preview time
+const pathLocale = url.pathname.startsWith('/zh') ? 'zh' : defaultLocale
+const locale = pathLocale
+const strings = t(locale)
 ---
 
-<html lang='en'>
+<html lang={locale === 'zh' ? 'zh-CN' : 'en'}>
 <head>
 	<meta charset='utf-8' />
 	<meta name='viewport' content='width=device-width, initial-scale=1' />
@@ -15,7 +22,7 @@ url.pathname = url.pathname.replace(/\/$/, '') // Strip slash from the end of th
 	<link rel='preconnect' href='https://fonts.gstatic.com' crossorigin />
 	<link href='https://fonts.googleapis.com/css2?family=IBM+Plex+Mono&display=swap' rel='stylesheet' />
 
-	<title>Not Found | Putting the "You" in CPU</title>
+	<title>{`${strings.notFoundTitle} | ${strings.articleTitle}`}</title>
 	
 	<meta http-equiv='Status' content='404 Not Found' />
 	<meta name='robots' content='noindex' />
@@ -30,10 +37,10 @@ url.pathname = url.pathname.replace(/\/$/, '') // Strip slash from the end of th
 	
 	<main>
 		<p>$ curl {url.toString()}</p>
-		<h1>Segmentation fault (core dumped)</h1>
+		<h1>{strings.notFoundSegfault}</h1>
 		<br>
-		<p>$ # Looks like you wound up accessing a memory region &mdash; errr, page &mdash; that doesn&lsquo;t exist.</p>
-		<p>$ # Want to learn more about page faults? <a href='/'>Start from the beginning!</a></p>
+		<p>$ # {strings.notFoundHint}</p>
+		<p>$ # {strings.notFoundCta} <a href={homeHref(locale)}>{strings.notFoundLink}</a></p>
 	</main>
 </body>
 </html>

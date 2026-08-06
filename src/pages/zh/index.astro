@@ -1,39 +1,39 @@
 ---
-import '../styles/global.css'
-import '../styles/home.css'
+import '../../styles/global.css'
+import '../../styles/home.css'
 
 import { render } from 'astro:content'
-import SEO from '../components/SEO.astro'
-import ColoredTitle from '../components/ColoredTitle.astro'
-import ExternalNav from '../components/ExternalNav.astro'
-import EditButton from '../components/EditButton.astro'
-import ScrollPadding from '../components/ScrollPadding.astro'
-import LanguageSwitcher from '../components/LanguageSwitcher.astro'
-import { t } from '../i18n/ui'
-import { getChapter, chapterHref, formatContinueLabel } from '../i18n/utils'
+import SEO from '../../components/SEO.astro'
+import ColoredTitle from '../../components/ColoredTitle.astro'
+import ExternalNav from '../../components/ExternalNav.astro'
+import EditButton from '../../components/EditButton.astro'
+import ScrollPadding from '../../components/ScrollPadding.astro'
+import LanguageSwitcher from '../../components/LanguageSwitcher.astro'
+import { t } from '../../i18n/ui'
+import { getChapter, chapterHref, formatContinueLabel } from '../../i18n/utils'
 
-const locale = 'en' as const
+const locale = 'zh' as const
 const strings = t(locale)
 const intro = await getChapter(locale, 'intro')
 const chapterOne = await getChapter(locale, 'the-basics')
 const { Content: Intro } = await render(intro!)
 ---
 
-<html lang='en'>
+<html lang='zh-CN'>
 <head>
 	<meta charset='utf-8' />
 	<meta name='viewport' content='width=device-width, initial-scale=1' />
 
 	<link rel='preconnect' href='https://fonts.googleapis.com' />
 	<link rel='preconnect' href='https://fonts.gstatic.com' crossorigin />
-	<link href='https://fonts.googleapis.com/css2?family=IBM+Plex+Serif:ital,wght@0,400;0,700;1,400&display=swap' rel='stylesheet' />
+	<link href='https://fonts.googleapis.com/css2?family=IBM+Plex+Serif:ital,wght@0,400;0,700;1,400&family=Noto+Serif+SC:wght@400;700&display=swap' rel='stylesheet' />
 
 	<SEO locale={locale} chapterSlug='intro' />
 	<script defer data-domain='cpu.land' src='https://plausible.io/js/script.js' />
 </head>
 <body>
 	<a class='orpheus-flag' target='_blank' href='https://hackclub.com/'>
-		<img src='/orpheus-flag.svg' width='560' height='315' alt='A project by Hack Club' title='A project by Hack Club' />
+		<img src='/orpheus-flag.svg' width='560' height='315' alt='Hack Club 项目' title='Hack Club 项目' />
 	</a>
 
 	<header>

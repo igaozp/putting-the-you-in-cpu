@@ -1,0 +1,66 @@
+---
+chapter: 2
+title: 切分时间
+shortname: 多任务
+slug: slice-dat-time
+updatedAt: 2026-03-22T00:00:00.000Z
+---
+
+假设你在写一个操作系统，希望用户能同时运行多个程序。但你没有花哨的多核处理器，CPU 一次只能执行一条指令！
+
+幸好，你是个很聪明的 OS 开发者。你发现可以靠让进程轮流使用 CPU 来「假装」并行：循环切换各个进程，每个跑几条指令，大家都能有响应，又不会被单个进程独占 CPU。
+
+但你怎么从程序代码手里把控制权抢回来，以便切换进程？研究一番后你发现，大多数电脑都带有定时芯片。你可以编程让定时芯片在一段时间后触发，切到 OS 的中断处理程序。
+
+## 硬件中断
+
+前面说过，软件中断用来把控制权从用户态程序交给 OS。叫「软件」中断，是因为它们由程序自愿触发——处理器在正常取指-执行循环中执行的机器码，告诉它把控制权切给内核。
+
+<img src='/images/keyboard-hardware-interrupt.png' loading='eager' style='max-width: 500px; margin: 0 auto;' alt='硬件中断如何打断正常执行的图示。上方：高亮按键的键盘，闪电连到右侧 CPU。下方：标为 program code 的二进制、类似闪电、再是标为 kernel code 的二进制。闪电标注为「interrupt triggers context switch」。' width='935' height='503' />
+
+OS 调度器使用像 [PIT](https://en.wikipedia.org/wiki/Programmable_interval_timer) 这样的*定时芯片*，为多任务触发硬件中断：
+
+1. 跳到程序代码之前，OS 设定时芯片在一段时间后触发中断。
+2. OS 切到用户模式，跳到该程序的下一条指令。
+3. 定时器到时，触发硬件中断，切到内核模式并跳到 OS 代码。
+4. OS 现在可以保存程序离开的位置，加载另一个程序，再重复这一过程。
+
+这叫*抢占式多任务*（preemptive multitasking）；打断一个进程的行为叫[*抢占*](https://en.wikipedia.org/wiki/Preemption_(computing))。如果你正一边用浏览器读这篇文章、一边在同一台机器上听歌，你自己的电脑大概每秒都在按这个循环跑成千上万次。
+
+## 时间片怎么算
+
+*时间片*（timeslice）是 OS 调度器允许一个进程运行、直到被抢占的时长。最简单的做法是给每个进程相同的时间片，比如 10&nbsp;ms 量级，再按顺序轮转任务。这叫*固定时间片轮询*（fixed timeslice round-robin）调度。
+
+> **补充：好玩的行话！**
+> 
+> 你知道时间片常被叫作「quantum（量子）」吗？现在你知道了，可以拿去惊艳朋友们。我很自豪自己在这篇文章里没有每隔一句就甩一次 quantum。
+> 
+> 说到时间片行话：Linux 内核开发者用 [jiffy](https://github.com/torvalds/linux/blob/22b8cc3e78f5448b4c5df00303817a9137cd663f/include/linux/jiffies.h) 时间单位来计固定频率的定时器滴答。jiffy 也用于衡量时间片长度等。Linux 的 jiffy 频率通常是 1000 Hz，但编译内核时可以配置。
+
+对固定时间片调度的一点改进是选一个*目标延迟*（target latency）——进程响应时间的理想上限。目标延迟是：在进程数量合理的前提下，一个进程被抢占后到再次执行的理想最长等待时间。*这很难在脑子里画出来！别急，马上有图。*
+
+时间片 = 目标延迟 ÷ 任务总数；这比固定时间片好，因为进程少时能减少浪费性的任务切换。目标延迟 15&nbsp;ms、10 个进程时，每个得到 15/10 即 1.5&nbsp;ms。只有 3 个进程时，每个能有更长的 5&nbsp;ms 时间片，同时仍满足目标延迟。
+
+进程切换计算成本很高，因为要保存当前程序的完整状态再恢复另一个。超过某个点后，时间片太小会导致进程切换过快、性能变差。常见做法是给时间片设下限（*最小粒度*，minimum granularity）。这意味着进程多到最小粒度生效时，目标延迟会被突破。
+
+写本文时，Linux 调度器使用 6&nbsp;ms 的目标延迟和 0.75&nbsp;ms 的最小粒度。
+
+<img src='/images/linux-scheduler-target-latency.png' loading='lazy' style='max-width: 500px; margin: 0 auto;' alt='标题为「Naive Dynamic Timeslice Round-Robin Scheduling」的图。三个进程在循环中轮流获得执行时间。进程执行块之间是更短的「kernel scheduler」块。每个程序执行块标「timeslice (2ms)」；从进程 1 开始到下一次进程 1 开始、包含 2 和 3 的执行，标为「target latency (6ms)」。' width='935' height='433' />
+
+带这种基础时间片计算的轮询调度，已经接近当今大多数电脑的做法。它仍然有点天真；多数操作系统会有更复杂的调度器，会考虑进程优先级和截止时间。自 2007 年起，Linux 使用名为 [Completely Fair Scheduler](https://docs.kernel.org/scheduler/sched-design-CFS.html) 的调度器。CFS 用一堆很花哨的计算机科学手段来优先排序任务、分配 CPU 时间。
+
+OS 每次抢占进程时，都需要加载新程序保存的执行上下文，包括其内存环境。做法是告诉 CPU 使用不同的*页表*——从「虚拟」地址到物理地址的映射。这也是阻止程序互访内存的系统；我们会在本文[第 5 章](/zh/the-translator-in-your-computer)和[第 6 章](/zh/lets-talk-about-forks-and-cows)钻进这个兔子洞。
+
+## 笔记 #1：内核可否被抢占
+
+到目前为止，我们只谈了用户态进程的抢占与调度。如果内核处理系统调用或跑驱动代码太久，程序也会感觉卡顿。
+
+现代内核（包括 Linux）是[可抢占内核](https://en.wikipedia.org/wiki/Kernel_preemption)。意思是：内核代码本身也能像用户态进程一样被中断和调度。
+
+除非你在写内核之类的东西，否则这点不是必须知道的——但我读过的几乎每篇文章都提过，所以我也提一下！多一点知识很少是坏事。
+
+## 笔记 #2：一点历史
+
+古老的操作系统，包括经典 Mac OS 以及 NT 之前很久的 Windows 版本，用的是抢占式多任务的前身。不是 OS 决定何时抢占程序，而是程序自己选择向 OS 让出控制权。它们会触发软件中断说：「嘿，你现在可以让别的程序跑了。」这些显式让出，是 OS 重获控制并切到下一个调度进程的唯一方式。
+
+这叫[*协作式多任务*](https://en.wikipedia.org/wiki/Cooperative_multitasking)。它有几个大硬伤：恶意或仅仅是设计糟糕的程序很容易把整个操作系统冻住；也几乎无法保证实时/时间敏感任务的时间一致性。因此，技术界很久以前就切到了抢占式多任务，再也没回头。

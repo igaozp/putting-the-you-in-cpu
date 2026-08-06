@@ -1,16 +1,16 @@
 ---
-import '../../styles/global.css'
-import '../../styles/one-pager.css'
+import '../../../styles/global.css'
+import '../../../styles/one-pager.css'
 
 import { render } from 'astro:content'
-import DowngradeHeadings from '../../components/DowngradeHeadings.astro'
-import ScrollPadding from '../../components/ScrollPadding.astro'
-import ColoredTitle from '../../components/ColoredTitle.astro'
-import LanguageSwitcher from '../../components/LanguageSwitcher.astro'
-import { t } from '../../i18n/ui'
-import { getChapters, homeHref, formatChapterLabel } from '../../i18n/utils'
+import DowngradeHeadings from '../../../components/DowngradeHeadings.astro'
+import ScrollPadding from '../../../components/ScrollPadding.astro'
+import ColoredTitle from '../../../components/ColoredTitle.astro'
+import LanguageSwitcher from '../../../components/LanguageSwitcher.astro'
+import { t } from '../../../i18n/ui'
+import { getChapters, homeHref, formatChapterLabel } from '../../../i18n/utils'
 
-const locale = 'en' as const
+const locale = 'zh' as const
 const strings = t(locale)
 const chapters = await getChapters(locale)
 const rendered = await Promise.all(
@@ -18,14 +18,14 @@ const rendered = await Promise.all(
 )
 ---
 
-<html lang='en'>
+<html lang='zh-CN'>
 <head>
 	<meta charset='utf-8' />
 	<meta name='viewport' content='width=device-width, initial-scale=1' />
 
 	<link rel='preconnect' href='https://fonts.googleapis.com' />
 	<link rel='preconnect' href='https://fonts.gstatic.com' crossorigin />
-	<link href='https://fonts.googleapis.com/css2?family=IBM+Plex+Mono&family=IBM+Plex+Serif:ital,wght@0,400;0,700;1,400;1,700&display=swap' rel='stylesheet' />
+	<link href='https://fonts.googleapis.com/css2?family=IBM+Plex+Mono&family=IBM+Plex+Serif:ital,wght@0,400;0,700;1,400;1,700&family=Noto+Serif+SC:wght@400;700&display=swap' rel='stylesheet' />
 
 	<title>{`${strings.onePager} | ${strings.articleTitle}`}</title>
 	<meta name='description' content={strings.abstract} />
@@ -62,7 +62,7 @@ const rendered = await Promise.all(
 	<main>
 		<div class='content'>
 			{rendered.map(([ chapter, { Content } ]) => <>
-				<h2 id={chapter.data.slug}>{formatChapterLabel(locale, chapter.data.chapter)}: {chapter.data.title}</h2>
+				<h2 id={chapter.data.slug}>{formatChapterLabel(locale, chapter.data.chapter)}：{chapter.data.title}</h2>
 				<DowngradeHeadings>
 					<Content />
 				</DowngradeHeadings>
